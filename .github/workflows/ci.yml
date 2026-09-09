@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: App and badge checks (ARM64)
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 15
+    steps:
+      - name: Check out the repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 10
+          run_install: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          architecture: arm64
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+          architecture: arm64
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm run lint
+
+      - name: Test the server and artwork
+        run: pnpm test
+
+      - name: Test the badge client and setup tools
+        run: |
+          python -m unittest discover -s badge/tests -p 'test_*.py'
+          python -m unittest discover -s device -p 'test_*.py'
+
+      - name: Build the controller and check TypeScript
+        run: pnpm run build
+
+      - name: Generate the browser test media
+        run: pnpm run content
+
+      - name: Install Chromium and its system dependencies
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Test the desktop and phone controller
+        run: pnpm run test:ui

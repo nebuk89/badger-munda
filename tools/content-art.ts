@@ -1,64 +1,7 @@
-import type { Clip } from '../shared/types.ts'
-
-export const WIDTH = 160
-export const HEIGHT = 120
-export const FPS = 8
-export const FRAME_COUNT = 64
-export const POSTER_FRAME = 16
-
-type Artwork = {
-  clip: Clip
-  frame: (frame: number) => string
-}
-
-const font = "'DejaVu Sans', 'Helvetica Neue', Arial, sans-serif"
-const mono = "'DejaVu Sans Mono', Menlo, monospace"
-const tau = Math.PI * 2
-
-function text(
-  value: string,
-  x: number,
-  y: number,
-  size: number,
-  color: string,
-  extra = '',
-) {
-  return `<text x="${x}" y="${y}" font-family="${font}" font-size="${size}" font-weight="900" fill="${color}" ${extra}>${value}</text>`
-}
-
-function label(value: string, x: number, y: number, color: string, size = 5) {
-  return `<text x="${x}" y="${y}" font-family="${mono}" font-size="${size}" font-weight="700" fill="${color}">${value}</text>`
-}
-
-function rect(x: number, y: number, width: number, height: number, fill: string, extra = '') {
-  return `<rect x="${x}" y="${y}" width="${width}" height="${height}" fill="${fill}" ${extra}/>`
-}
-
-function bars(frame: number, x: number, y: number, color: string) {
-  return Array.from({ length: 5 }, (_, i) => {
-    const height = 2 + i * 2
-    const active = i < 3 || Math.sin((frame / FRAME_COUNT) * tau + i) > -0.45
-    return rect(x + i * 3, y + 10 - height, 2, height, color, `opacity="${active ? 1 : 0.3}"`)
-  }).join('')
-}
-
-function surface(frame: number, tint: string) {
-  const lines = Array.from({ length: 30 }, (_, i) =>
-    rect(0, i * 4, WIDTH, 1, '#000', 'opacity=".075"'),
-  ).join('')
-  const grain = Array.from({ length: 50 }, (_, i) =>
-    rect((i * 47 + 13) % WIDTH, (i * 31 + 7) % HEIGHT, 1, 1, tint, 'opacity=".12"'),
-  ).join('')
-  return `${lines}${grain}${rect(0, (frame * 2) % HEIGHT, WIDTH, 2, tint, 'opacity=".025"')}`
-}
-
-function svg(frame: number, background: string, drawing: string, tint: string) {
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${HEIGHT}" viewBox="0 0 ${WIDTH} ${HEIGHT}">
-    ${rect(0, 0, WIDTH, HEIGHT, background)}
-    ${drawing}
-    ${surface(frame, tint)}
-  </svg>`
-}
+import { bars, clip, FRAME_COUNT, label, rect, svg, tau, text, type Artwork } from './content-primitives.ts'
+import { extraArtworks } from './extra-content-art.ts'
+import { gameEventArtworks } from './game-event-art.ts'
+export { WIDTH, HEIGHT, FPS, FRAME_COUNT, POSTER_FRAME } from './content-primitives.ts'
 
 function ration(frame: number) {
   const ink = '#20251e'
@@ -228,26 +171,6 @@ function tavern(frame: number) {
   `, cream)
 }
 
-function clip(
-  id: string,
-  title: string,
-  subtitle: string,
-  category: 'advert' | 'notice',
-  accent: string,
-): Clip {
-  return {
-    id, title, subtitle, category,
-    duration: FRAME_COUNT / FPS,
-    fps: FPS,
-    frameCount: FRAME_COUNT,
-    width: WIDTH,
-    height: HEIGHT,
-    accent,
-    posterUrl: `/media/${id}/poster.png`,
-    videoUrl: `/media/${id}/video.mp4`,
-  }
-}
-
 export const artworks: Artwork[] = [
   {
     clip: clip('ration-works', 'Ration Works', 'New flavour. Same nutrients.', 'advert', '#d9b440'),
@@ -261,4 +184,6 @@ export const artworks: Artwork[] = [
     clip: clip('sump-tavern', 'The Sump', 'Filtered twice. Questions cost extra.', 'advert', '#4eb39a'),
     frame: tavern,
   },
+  ...extraArtworks,
+  ...gameEventArtworks,
 ]

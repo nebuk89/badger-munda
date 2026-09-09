@@ -11,6 +11,8 @@ if (!existsSync(path.join(mount, 'main.py')) || !existsSync(path.join(mount, 'ap
 }
 if (!statSync(mount).isDirectory()) throw new Error('BADGE_MOUNT must point to the mounted badge drive.')
 
+const rotation = process.env.BADGE_ROTATION ?? '180'
+if (!['0', '180'].includes(rotation)) throw new Error('BADGE_ROTATION must be 0 or 180.')
 const addresses = localAddresses(Number(process.env.PORT ?? 8787))
 const serverUrl = process.env.SERVER_URL ?? (addresses.length === 1 ? addresses[0] : undefined)
 if (!serverUrl) throw new Error('Set SERVER_URL to the Mac address that the badge can reach.')
@@ -38,12 +40,13 @@ const target = path.join(mount, 'apps', 'underhive')
 mkdirSync(target, { recursive: true })
 for (const file of modules) atomicWrite(path.join(target, file), readFileSync(path.join(source, file)))
 atomicWrite(path.join(target, 'config.py'), [
-  '# Private installed settings. Wi-Fi credentials stay in /secrets.py.',
+  '# Private installed settings. Wi-Fi credentials stay in /system/secrets.py.',
   `SERVER_URL = ${JSON.stringify(address.origin)}`,
   `DEVICE_TOKEN = ${JSON.stringify(config.deviceToken)}`,
   'DEVICE_ID = "desk-badge"',
   'FRAME_FORMAT = "png"',
   'TARGET_FPS = 8',
+  `DISPLAY_ROTATION = ${rotation}`,
   '',
 ].join('\n'))
 const icon = await sharp(Buffer.from(
@@ -55,4 +58,5 @@ atomicWrite(path.join(mount, 'apps', 'menu', '__init__.py'), menu)
 console.log(`Installed Underhive at ${target}`)
 console.log(`Backup: ${backup}`)
 console.log(`Server: ${address.origin}`)
+console.log(`Badge display rotation: ${rotation} degrees`)
 console.log('Wi-Fi settings and firmware are unchanged. Eject BADGER, press RESET, then select underhive on menu page 2.')

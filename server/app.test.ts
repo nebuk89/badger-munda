@@ -28,6 +28,13 @@ before(async () => {
     posterUrl: '/media/sample/poster.png', videoUrl: '/media/sample/video.mp4',
   }
   await writeFile(path.join(clipDir, 'manifest.json'), JSON.stringify(clip))
+  const eventDir = path.join(directory, 'library', 'event-failed-jump')
+  await mkdir(path.join(eventDir, 'frames'), { recursive: true })
+  const event: Clip = { ...clip, id: 'event-failed-jump', title: 'Failed Jump', category: 'event', duration: 8, frameCount: 16 }
+  await writeFile(path.join(eventDir, 'manifest.json'), JSON.stringify(event))
+  for (let frame = 0; frame < event.frameCount; frame++) {
+    await writeFile(path.join(eventDir, 'frames', `${String(frame).padStart(4, '0')}.rgba`), rgba)
+  }
   const config = loadConfig(directory)
   token = config.deviceToken
   const { app } = await createApp({ dataDir: directory, config, port: 8787 })
@@ -140,4 +147,36 @@ test('private config persists but is never served as media', async () => {
   assert.equal(loadConfig(directory).deviceToken, stored.deviceToken)
   const response = await fetch(`${url}/media/sample/manifest.json`, { headers: { cookie } })
   assert.equal(response.status, 404)
+})
+
+test('game dispatch API animates the badge while the interrupted advert stays paused', async () => {
+  const command = async (body: object, requestId: string): Promise<StationState> => {
+    const response = await fetch(`${url}/api/command`, {
+      method: 'POST', headers: { cookie, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...body, requestId }),
+    })
+    assert.equal(response.status, 200)
+    return response.json()
+  }
+  await command({ action: 'play', clipId: 'sample' }, 'api-game-setup')
+  const paused = await command({ action: 'toggle-pause' }, 'api-game-pause')
+  const active = await command({ action: 'game-event', eventId: 'failed-jump' }, 'api-game-dispatch')
+  assert.equal(active.broadcast.paused, true)
+  assert.equal(active.broadcast.position, paused.broadcast.position)
+  assert.equal(active.broadcast.event?.clipId, 'event-failed-jump')
+  const retry = await command({ action: 'game-event', eventId: 'failed-jump' }, 'api-game-dispatch')
+  assert.equal(retry.broadcast.event?.startedAt, active.broadcast.event?.startedAt)
+  const wireFrame = async () => {
+    const response = await fetch(`${url}/api/badge/frame?format=png&device=game-badge`, {
+      headers: { authorization: `Bearer ${token}` },
+    })
+    assert.equal(response.status, 200)
+    return Buffer.from(await response.arrayBuffer())
+  }
+  assert.equal((await wireFrame())[9], 0, 'the event itself is not paused')
+  const clear = await command({ action: 'clear-event' }, 'api-game-clear')
+  assert.equal(clear.broadcast.event, null)
+  assert.equal(clear.broadcast.position, paused.broadcast.position)
+  assert.equal((await wireFrame())[9], 1, 'the advert returns to its paused state')
+  await command({ action: 'toggle-pause' }, 'api-game-resume')
 })

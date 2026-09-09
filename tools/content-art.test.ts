@@ -3,9 +3,16 @@ import { createHash } from 'node:crypto'
 import test from 'node:test'
 import sharp from 'sharp'
 import { artworks, FPS, FRAME_COUNT, HEIGHT, POSTER_FRAME, WIDTH } from './content-art.ts'
+import { label, svg, text } from './content-primitives.ts'
+import { gameEvents } from '../shared/game-events.ts'
 
 test('starter clips use unique identities and the badge media contract', () => {
-  assert.deepEqual(artworks.map(({ clip }) => clip.id), ['ration-works', 'curfew-signal', 'sump-tavern'])
+  assert.deepEqual(artworks.map(({ clip }) => clip.id), [
+    'ration-works', 'curfew-signal', 'sump-tavern',
+    'clean-air', 'second-hands', 'shaft-nine', 'guild-credit', 'salvage-union',
+    'ash-waste-tours', 'missing-servitor', 'power-coop', 'sump-shuffle', 'hab-block-thirteen',
+    ...gameEvents.map((event) => event.clipId),
+  ])
   for (const { clip } of artworks) {
     assert.equal(clip.duration, 8)
     assert.equal(clip.fps, FPS)
@@ -15,7 +22,18 @@ test('starter clips use unique identities and the badge media contract', () => {
     assert.equal(clip.posterUrl, `/media/${clip.id}/poster.png`)
     assert.equal(clip.videoUrl, `/media/${clip.id}/video.mp4`)
     assert.match(clip.accent, /^#[0-9a-f]{6}$/i)
-    assert.ok(['advert', 'notice'].includes(clip.category))
+    assert.ok(['advert', 'notice', 'event'].includes(clip.category))
+  }
+})
+
+test('every game preset has a dedicated event video, never an ambient advert', () => {
+  const eventArt = artworks.filter(({ clip }) => clip.category === 'event')
+  assert.equal(eventArt.length, 6)
+  for (const event of gameEvents) {
+    const artwork = eventArt.find(({ clip }) => clip.id === event.clipId)
+    assert.ok(artwork, `Missing video for ${event.title}`)
+    assert.equal(artwork.clip.title, event.title)
+    assert.equal(artwork.clip.subtitle, event.detail)
   }
 })
 
@@ -48,4 +66,14 @@ test('each message gets a four-second hold and the poster retains the main ident
   assert.match(ration.frame(POSTER_FRAME), /RATION/)
   assert.match(curfew.frame(POSTER_FRAME), /CURFEW/)
   assert.match(tavern.frame(POSTER_FRAME), /THE SUMP/)
+})
+
+test('drawing helpers preserve ampersands and angle brackets as visible text', async () => {
+  const copy = 'BOLT & SONS <REPAIRS>'
+  const drawing = text(copy, 5, 30, 8, '#fff') + label(copy, 5, 50, '#fff')
+  assert.match(drawing, /BOLT &amp; SONS &lt;REPAIRS&gt;/)
+  const image = await sharp(Buffer.from(svg(0, '#000', drawing, '#fff'))).png().toBuffer()
+  const metadata = await sharp(image).metadata()
+  assert.equal(metadata.width, WIDTH)
+  assert.equal(metadata.height, HEIGHT)
 })

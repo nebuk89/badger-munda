@@ -5,9 +5,10 @@ The Mac serves the content over Wi-Fi. The phone controls playback and previews 
 
 ## What it does
 
-- Plays three original animated adverts, plus videos you import.
+- Plays thirteen original animated adverts, plus videos you import.
 - Provides phone controls for play, replay, pause, queue, and repeat.
 - Shows temporary round and event broadcasts over the current programme.
+- Dispatches six game-event videos that play once, then resume the interrupted advert.
 - Serves 160x120 frames to the badge without a normal MP4 decoder.
 - Shows device connections, acknowledged frames, and reported playback speed.
 - Preserves the badge's existing apps through a paginated menu.
@@ -55,13 +56,19 @@ Restart `npm start` after a new production build.
 
 ## Content
 
-`npm run content` creates the original Ration Works, Curfew Signal, and Sump Tavern adverts.
+`npm run content` creates thirteen original Underhive adverts and notices, plus six game-event videos.
+The first pack contains Ration Works, Curfew Signal, and Sump Tavern.
+The expansion adds ten designs for utilities, shops, transport, housing, and local notices.
 Each advert has browser video, a poster, and raw badge frames.
 The generator preserves existing complete clips.
 
+Restart the Mac station after you generate new clips while it is running.
+The badge reconnects automatically. The phone needs the same pairing code again.
+This restart is not needed for clips that you upload through the controller.
+
 ### Downloadable samples
 
-The repository includes the three original adverts as ready-to-use MP4s with PNG posters.
+The repository includes all thirteen adverts and six game events as ready-to-use MP4s with PNG posters.
 Each video is silent, eight seconds long, and 640x480 at 8 FPS.
 
 | Advert | Video | Poster |
@@ -69,6 +76,25 @@ Each video is silent, eight seconds long, and 640x480 at 8 FPS.
 | Ration Works | [MP4](samples/ration-works/video.mp4) | [PNG](samples/ration-works/poster.png) |
 | Curfew Signal | [MP4](samples/curfew-signal/video.mp4) | [PNG](samples/curfew-signal/poster.png) |
 | Sump Tavern | [MP4](samples/sump-tavern/video.mp4) | [PNG](samples/sump-tavern/poster.png) |
+| Clean Air Club | [MP4](samples/clean-air/video.mp4) | [PNG](samples/clean-air/poster.png) |
+| Second Hands | [MP4](samples/second-hands/video.mp4) | [PNG](samples/second-hands/poster.png) |
+| Shaft Nine | [MP4](samples/shaft-nine/video.mp4) | [PNG](samples/shaft-nine/poster.png) |
+| Guild Credit | [MP4](samples/guild-credit/video.mp4) | [PNG](samples/guild-credit/poster.png) |
+| Salvage Union | [MP4](samples/salvage-union/video.mp4) | [PNG](samples/salvage-union/poster.png) |
+| Ash Waste Tours | [MP4](samples/ash-waste-tours/video.mp4) | [PNG](samples/ash-waste-tours/poster.png) |
+| Missing Servitor | [MP4](samples/missing-servitor/video.mp4) | [PNG](samples/missing-servitor/poster.png) |
+| Power Co-op | [MP4](samples/power-coop/video.mp4) | [PNG](samples/power-coop/poster.png) |
+| Sump Shuffle | [MP4](samples/sump-shuffle/video.mp4) | [PNG](samples/sump-shuffle/poster.png) |
+| Hab Block 13 | [MP4](samples/hab-block-thirteen/video.mp4) | [PNG](samples/hab-block-thirteen/poster.png) |
+
+| Game event | Video | Poster |
+|---|---|---|
+| Failed Jump | [MP4](samples/event-failed-jump/video.mp4) | [PNG](samples/event-failed-jump/poster.png) |
+| Fatality | [MP4](samples/event-fatality/video.mp4) | [PNG](samples/event-fatality/poster.png) |
+| Dice Fail | [MP4](samples/event-dice-fail/video.mp4) | [PNG](samples/event-dice-fail/poster.png) |
+| Critical Hit | [MP4](samples/event-critical-hit/video.mp4) | [PNG](samples/event-critical-hit/poster.png) |
+| Ammo Jam | [MP4](samples/event-ammo-jam/video.mp4) | [PNG](samples/event-ammo-jam/poster.png) |
+| Bottled It | [MP4](samples/event-bottled-it/video.mp4) | [PNG](samples/event-bottled-it/poster.png) |
 
 Download an MP4 from its GitHub file page to use it elsewhere.
 To import one into a station, select **Upload clip** in the controller.
@@ -80,6 +106,21 @@ That command creates the individual 160x120 PNG and RGBA frames under `data/libr
 An eight-second advert has 64 frames at 8 FPS.
 These files are a rebuildable frame cache, separate from the sample MP4s.
 The repository excludes the cache, private settings, and device backups.
+Use `npm run content` for the game-event controls; normal uploads become custom clips, not game-event presets.
+
+### Dispatch a game event
+
+The **Game events** section contains six illustrated controls for moments during a game.
+Select **Preview** to watch a video on the phone without changing the broadcast.
+Select **Dispatch event** to send it to the broadcast.
+Each eight-second video plays once, then the advert resumes from the exact position where it stopped.
+The queue, repeat setting, and previous pause state stay unchanged.
+An event still plays when the advert is paused.
+
+A new dispatch replaces the current event and starts the new video from its first frame.
+The advert stays at its original position until the event ends or you cancel it.
+Game events never enter automatic advert rotation or the queue.
+The existing Power failure, Toxic leak, Lockdown, and round controls remain separate text notices.
 
 ### Import your own clips
 
@@ -134,6 +175,29 @@ The Mac and phone can use another band on the same reachable local network.
 The physical badge now receives and shows the adverts over Wi-Fi.
 It uses compressed PNG frames in a 64 KiB RAM filesystem, not flash downloads.
 
+### Pair from the badge
+
+After Wi-Fi connects and the badge reaches the Mac, its first authenticated frame shows
+**WI-FI CONNECTED**, the Mac's numeric address and port, and a large six-digit pairing code.
+On a phone on the same reachable network, open the displayed `http://` address and enter the code.
+The card stays visible until a phone pairs successfully; it is not a timed splash.
+If a controller already has a valid paired session, a connecting badge goes straight to playback.
+
+Pairing automatically releases every waiting badge into the current broadcast.
+The card does not pause or replace the programme, change its queue/repeat settings, or dispatch an event.
+It appears even when the programme is paused; afterwards, the normal pause state applies,
+including game-event videos playing over a paused advert.
+Logging out does not interrupt badges already playing.
+A new badge, or one reconnecting after eight seconds without a frame request, asks for pairing
+again only when no unexpired controller sessions remain.
+
+The address comes from the Mac's side of that badge's connection, not an unrelated network interface
+or a supplied Host header, and retains the configured server port.
+An IPv6-only connection without an IPv4 address reports an explicit error; use the Mac's LAN IPv4 address.
+The card is delivered only through the bearer-authenticated badge frame endpoint, entirely in RAM.
+It is never the phone preview or a media asset, and the code is not included in setup or state responses.
+Device state reports `awaitingPairing` without publishing the code.
+
 ## Playback behaviour
 
 The server owns the current clip and playback position.
@@ -143,9 +207,15 @@ The nominal output rate is 8 FPS; the actual badge rate depends on its firmware 
 
 Queue entries take priority when the current clip finishes.
 With repeat enabled, the selected clip repeats after any queued entries.
-Otherwise, playback advances through the library.
-An event overlays the programme for its selected duration.
-The programme's timeline continues underneath the event.
+Otherwise, playback advances through the library, except for clips in the `event` category.
+A text notice overlays the programme for its selected duration.
+The programme's timeline continues underneath a text notice.
+A game-event video freezes the programme's position until it ends or you cancel it.
+Replacing a game video with a text or round notice resumes the programme's timeline immediately.
+Explicit play, next, previous, or replay commands cancel a game video.
+The physical badge buttons retain those commands.
+A pause command during a game video changes the programme's pause state, not the video.
+The controller disables those transport controls during game videos to avoid accidental changes.
 
 ## HTTP interface
 
@@ -166,16 +236,33 @@ Reusing that ID with the same command is safe for network retries.
 Reusing it with a different command fails.
 The server retains recent IDs for up to ten minutes, with a limit of 1,000 entries.
 
+Dispatch a game event with this command:
+
+```json
+{ "action": "game-event", "eventId": "failed-jump", "requestId": "game-event-0001" }
+```
+
+The other preset IDs are `fatality`, `dice-fail`, `critical-hit`, `ammo-jam`, and `bottled-it`.
+Use a new request ID to dispatch the same event again from its first frame.
+Use `clear-event` to stop the current game video or text notice.
+Game videos need their generated assets. The server reports an error if a preset video is unavailable.
+Temporary events do not survive a restart; the saved advert resumes without replaying the event.
+
 The binary frame begins with a 20-byte little-endian `UBF1` header.
 Its fields are magic, width, height, format, flags, nominal FPS, frame ID, and payload length.
 The corresponding Python format is `<4sHHBBHII`.
 Format 1 is RGBA8888, format 2 is little-endian RGB565, format 3 is RGB332, and format 4 is PNG.
 The installed badge requests `format=png`.
-Flag bit 0 marks paused playback.
+Flag bit 0 marks paused playback. It stays clear while a game video plays over a paused programme.
 The device reports a rendered frame through `X-Badge-Frame` on its next request.
 It can report measured speed through `X-Badge-Fps`.
 
 ## Checks
+
+GitHub Actions runs `.github/workflows/ci.yml` on pushes, pull requests, and manual runs.
+The job uses GitHub's `ubuntu-24.04-arm` runner with ARM64 Node.js 24 and Python 3.12.
+It runs lint, server and artwork tests, badge and setup tests, the production build, and desktop/phone browser tests.
+The job generates its own sample frames and installs Chromium. It needs no badge, Wi-Fi credentials, or repository secrets.
 
 ```sh
 npm test

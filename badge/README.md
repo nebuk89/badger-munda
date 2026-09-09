@@ -139,7 +139,10 @@ numeric IPv4 address to avoid unbounded DNS resolution, a 1.2-second inactivity
 deadline, a 3-second total request deadline, and 1/2/4/8/15-second retry backoff.
 Wi-Fi association has a 30-second deadline and a 15-second retry delay.
 A negative driver status ends an attempt after at least one second.
-The app reads `/secrets.py` before it tries the factory secrets module.
+The app reads `/system/secrets.py` before the legacy `/secrets.py` copy or the factory secrets module.
+The persistent file appears as `secrets.py` on the BADGER USB drive.
+On a hardware reset, this badge restores `/secrets.py` from `/system/secrets.py`.
+Changing only `/secrets.py` can work until that reset, then restore the old network name and password.
 An existing connected WLAN can also be reused. The update loop yields for
 one millisecond while Wi-Fi is disconnected; HTTP requests remain nonblocking.
 Animated dots and elapsed seconds show that connection attempts remain active.
@@ -162,7 +165,19 @@ DEVICE_TOKEN = "<the private device token>"
 DEVICE_ID = "desk-badge"
 FRAME_FORMAT = "png"
 TARGET_FPS = 8
+DISPLAY_ROTATION = 180
 ```
+
+The tabletop installation uses `DISPLAY_ROTATION = 180` for an upside-down badge.
+Use `0` for the stock upright orientation. Older configurations without this field remain upright.
+The app sets the native ST7789 orientation before it draws any connection notices.
+This rotates all Underhive output, including pairing codes, adverts, and game events.
+Phone previews stay upright. HOME resets the device and restores the stock launcher orientation.
+No extra frame buffer, image conversion, or firmware change is needed.
+
+The driver uses [MADCTL 0x90](https://github.com/pimoroni/tufty2350/blob/main/modules/c/st7789/st7789.cpp).
+The upside-down setting uses 0x50 to reverse both axes without changing scan order.
+The [Python command binding](https://github.com/pimoroni/tufty2350/blob/main/modules/c/st7789/st7789_bindings.cpp) needs a tuple of data bytes.
 
 The committed token is intentionally empty. Device IDs allow ASCII letters,
 digits, hyphens, and underscores only. Keep private settings out of Git. HTTP
@@ -184,6 +199,8 @@ npm run badge:install
 If the Mac has several LAN addresses, set `SERVER_URL` to the address the badge
 can reach. The installer saves a private backup under `data/backups/`.
 It writes the app, device configuration, and paginated menu.
+New installations default to the upside-down tabletop orientation.
+Set `BADGE_ROTATION=0` when you run the installer for an upright badge.
 Eject BADGER safely before a normal RESET.
 
 Prepare the serial tools once:
@@ -199,8 +216,9 @@ Set Wi-Fi from a local interactive terminal:
 .venv/bin/python tools/configure-wifi.py
 ```
 
-Both entries hide typing. The tool saves credentials only on the badge and
-preserves a private `/secrets.py.before-underhive` backup there.
+Both entries hide typing. The tool saves credentials in the persistent `/system/secrets.py` file.
+It preserves a private `/system/secrets.py.before-underhive` backup, flushes the write, and checks the saved values.
+It does not save credentials on the Mac.
 Use the exact network name, including case, for a visible 2.4 GHz network.
 The Mac and phone can use 5 GHz on the same reachable LAN.
 A new password does not fix `Wi-Fi network not found`.
@@ -208,6 +226,7 @@ A new password does not fix `Wi-Fi network not found`.
 After setup, press RESET once. Press a front button to pass the Universe splash.
 From the initial menu selection, press A for Underhive on page two.
 Press B to start it. Keep the Mac awake while it serves the broadcast.
+Use a full hardware reset to check persistence; a serial soft reset alone does not cover the boot-copy behaviour.
 
 ## Safe probe, then hardware acceptance
 

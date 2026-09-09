@@ -459,6 +459,51 @@ class AppImportTests(unittest.TestCase):
             spec.loader.exec_module(module)
         return module
 
+    def test_upside_down_display_reverses_both_axes_without_changing_scan_order(self):
+        module = self.load_app()
+        commands = []
+        fake = types.SimpleNamespace(display=types.SimpleNamespace(command=lambda *args: commands.append(args)))
+        with patch.object(module, "config", types.SimpleNamespace(DISPLAY_ROTATION=180)), patch.dict(sys.modules, {"badgeware": fake}):
+            module._configure_display_rotation()
+        self.assertEqual(commands, [(0x36, (0x50,))])
+        self.assertEqual(0x90 ^ commands[0][1][0], 0xC0)
+
+    def test_upright_and_legacy_config_use_the_stock_orientation(self):
+        for settings in (types.SimpleNamespace(DISPLAY_ROTATION=0), types.SimpleNamespace()):
+            module = self.load_app()
+            commands = []
+            fake = types.SimpleNamespace(display=types.SimpleNamespace(command=lambda *args: commands.append(args)))
+            with patch.object(module, "config", settings), patch.dict(sys.modules, {"badgeware": fake}):
+                module._configure_display_rotation()
+            self.assertEqual(commands, [(0x36, (0x90,))])
+
+    def test_invalid_rotation_cannot_write_a_display_register(self):
+        for rotation in (90, 270, "180", False):
+            module = self.load_app()
+            with patch.object(module, "config", types.SimpleNamespace(DISPLAY_ROTATION=rotation)):
+                with self.assertRaisesRegex(ValueError, "DISPLAY_ROTATION must be 0 or 180"):
+                    module._configure_display_rotation()
+
+    def test_rotation_requires_the_supported_display_command(self):
+        module = self.load_app()
+        fake = types.SimpleNamespace(display=object())
+        with patch.object(module, "config", types.SimpleNamespace(DISPLAY_ROTATION=180)), patch.dict(sys.modules, {"badgeware": fake}):
+            with self.assertRaisesRegex(module.UnsupportedFirmware, "display.command absent"):
+                module._configure_display_rotation()
+
+    def test_init_rotates_the_display_before_showing_a_configuration_error(self):
+        module = self.load_app()
+        events = []
+        module.config = types.SimpleNamespace(
+            DISPLAY_ROTATION=180, SERVER_URL="", DEVICE_TOKEN="", DEVICE_ID="desk-badge")
+        module.time = types.SimpleNamespace(ticks_ms=lambda: 0)
+        module.brushes = types.SimpleNamespace(color=lambda *args: args)
+        module._show_notice = lambda message: events.append(message)
+        fake = types.SimpleNamespace(display=types.SimpleNamespace(command=lambda *args: events.append(args)))
+        with patch.dict(sys.modules, {"badgeware": fake, "network": types.SimpleNamespace()}):
+            module.init()
+        self.assertEqual(events, [(0x36, (0x50,)), "Check app configuration"])
+
     def test_waiting_title_animates_without_a_status_change(self):
         module = self.load_app()
         labels = []
@@ -500,8 +545,44 @@ class AppImportTests(unittest.TestCase):
         from io import StringIO
         factory = types.SimpleNamespace(WIFI_SSID="factory-network", WIFI_PASSWORD="factory-password")
         saved = StringIO('WIFI_SSID = "saved-network"\nWIFI_PASSWORD = "saved-password"\n')
-        with patch.dict(sys.modules, {"secrets": factory}), patch("builtins.open", return_value=saved):
+        with patch.dict(sys.modules, {"secrets": factory}), patch("builtins.open", return_value=saved) as opened:
             self.assertEqual(module._wifi_credentials(), ("saved-network", "saved-password"))
+            opened.assert_called_once_with("/system/secrets.py", "r")
+
+    def test_wifi_uses_persistent_settings_instead_of_an_old_boot_copy(self):
+        module = self.load_app()
+
+        def open_settings(filename, mode):
+            if filename == "/system/secrets.py":
+                return io.StringIO('WIFI_SSID = "persistent-network"\nWIFI_PASSWORD = "persistent-password"\n')
+            return io.StringIO('WIFI_SSID = "old-network"\nWIFI_PASSWORD = "old-password"\n')
+
+        with patch("builtins.open", side_effect=open_settings):
+            self.assertEqual(module._wifi_credentials(), ("persistent-network", "persistent-password"))
+
+    def test_wifi_uses_legacy_boot_copy_only_when_persistent_file_is_missing(self):
+        module = self.load_app()
+
+        def open_settings(filename, mode):
+            if filename == "/system/secrets.py":
+                raise OSError(2)
+            return io.StringIO('WIFI_SSID = "legacy-network"\nWIFI_PASSWORD = "legacy-password"\n')
+
+        with patch("builtins.open", side_effect=open_settings):
+            self.assertEqual(module._wifi_credentials(), ("legacy-network", "legacy-password"))
+
+    def test_invalid_persistent_wifi_settings_do_not_fall_back_to_old_credentials(self):
+        module = self.load_app()
+        with patch("builtins.open", return_value=io.StringIO("WIFI_SSID = 42\nWIFI_PASSWORD = 'test'\n")):
+            with self.assertRaises(ValueError):
+                module._wifi_credentials()
+
+    def test_unreadable_persistent_wifi_settings_raise_the_storage_error(self):
+        module = self.load_app()
+        with patch("builtins.open", side_effect=OSError(5)) as opened:
+            with self.assertRaises(OSError):
+                module._wifi_credentials()
+            opened.assert_called_once_with("/system/secrets.py", "r")
 
     def test_launcher_import_has_no_wifi_or_disk_effects(self):
         fake = types.ModuleType("badgeware")

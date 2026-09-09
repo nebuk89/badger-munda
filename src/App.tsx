@@ -6,12 +6,14 @@ import {
   Repeat2, RotateCcw, Search, ShieldAlert, SkipBack, SkipForward, Smartphone, Trash2, Wifi, WifiOff, X, Zap,
 } from 'lucide-react'
 import { Toaster, toast } from 'sonner'
+import { gameEvents } from '../shared/game-events'
 import type { BadgeDevice, Clip, Command, StationState } from '../shared/types'
 import { Button } from './components/ui/button'
 import { Input } from './components/ui/input'
 import { BroadcastPreview } from './components/BroadcastPreview'
 import { ClipPreview } from './components/ClipPreview'
 import { ConnectDialog } from './components/ConnectDialog'
+import { GameEventControls } from './components/GameEventControls'
 import { UploadDialog } from './components/UploadDialog'
 import { ApiError, api, command, errorMessage, type Setup } from './lib/api'
 import './App.css'
@@ -156,7 +158,7 @@ function EventControls({ state, now, disabled, send }: {
   const [title, setTitle] = useState(presets[0].title)
   const [detail, setDetail] = useState(presets[0].detail)
   const [duration, setDuration] = useState('10')
-  const activeEvent = state.broadcast.event
+  const activeEvent = state.broadcast.event?.clipId ? null : state.broadcast.event
   const remaining = activeEvent ? Math.max(0, Math.ceil((activeEvent.expiresAt - now) / 1000)) : 0
   const valid = title.trim().length > 0 && Number.isInteger(Number(duration)) && Number(duration) >= 1 && Number(duration) <= 60
   return (
@@ -181,7 +183,7 @@ function EventControls({ state, now, disabled, send }: {
           </div>
         </form>
         {activeEvent && <div className="active-event" role="status"><div><span className="status-dot waiting" /><strong>{activeEvent.title}</strong><span>{remaining > 0 ? `${remaining}s left` : 'Ending…'}</span></div><Button variant="ghost" disabled={disabled} onClick={() => send({ action: 'clear-event' }, 'Event cleared. Regular programming resumed.')}><X /> Clear event</Button></div>}
-        <p className="event-note"><CircleAlert size={13} /> Events replace the feed briefly, then programming resumes.</p>
+        <p className="event-note"><CircleAlert size={13} /> Text notices replace the feed briefly. The advert timeline continues underneath.</p>
       </div>
     </section>
   )
@@ -252,15 +254,23 @@ function Station({ onUnpaired }: { onUnpaired: (message: string) => void }) {
 
   const { broadcast, library } = state
   const currentClip = library.find((clip) => clip.id === broadcast.clipId)
+  const gameEvent = broadcast.event?.clipId ? broadcast.event : null
+  const onAirClip = gameEvent ? library.find((clip) => clip.id === gameEvent.clipId) : currentClip
+  const onAirTitle = gameEvent?.title || currentClip?.title
+  const onAirSubtitle = gameEvent?.detail || currentClip?.subtitle
+  const onAirPaused = broadcast.paused && !gameEvent
   const disabled = commandMutation.isPending || stateQuery.isError
+  const transportDisabled = disabled || !!gameEvent
   const receipt = deviceReceipt(state.devices, now, stateQuery.isError)
   const measured = receipt.receiving.find((device) => device.fps > 0)
-  const elapsed = broadcast.paused ? 0 : Math.max(0, (now - state.server.now) / 1000)
+  const elapsed = broadcast.paused || gameEvent ? 0 : Math.max(0, (now - state.server.now) / 1000)
   const position = broadcast.position + elapsed
-  const playbackPosition = currentClip?.duration
+  const advertPosition = currentClip?.duration
     ? broadcast.loop ? position % currentClip.duration : Math.min(position, currentClip.duration)
     : 0
-  const progress = currentClip?.duration ? (playbackPosition / currentClip.duration) * 100 : 0
+  const playbackDuration = gameEvent ? (gameEvent.expiresAt - gameEvent.startedAt) / 1000 : currentClip?.duration || 0
+  const playbackPosition = gameEvent ? Math.min(playbackDuration, Math.max(0, (now - gameEvent.startedAt) / 1000)) : advertPosition
+  const progress = playbackDuration ? (playbackPosition / playbackDuration) * 100 : 0
   const filteredLibrary = library.filter((clip) => (category === 'all' || category === clip.category) && `${clip.title} ${clip.subtitle}`.toLowerCase().includes(search.toLowerCase()))
   const roundValue = roundInput || String(broadcast.round)
   const validRound = Number.isInteger(Number(roundValue)) && Number(roundValue) >= 1 && Number(roundValue) <= 99
@@ -272,6 +282,7 @@ function Station({ onUnpaired }: { onUnpaired: (message: string) => void }) {
         <Brand />
         <nav aria-label="Station navigation">
           <a href="#broadcast" className="active"><Radio size={15} /> Broadcast desk</a>
+          <a href="#game-events"><Zap size={15} /> Game events</a>
           <a href="#library"><Film size={15} /> Content library</a>
         </nav>
         <div className="header-actions"><span className={`connection-pill ${receipt.kind}`}><span className={`status-dot ${receipt.kind}`} />{receipt.label}</span><Button variant="outline" onClick={() => setConnectOpen(true)}><Link2 /><span>Connect</span></Button></div>
@@ -287,11 +298,11 @@ function Station({ onUnpaired }: { onUnpaired: (message: string) => void }) {
 
         <section className="broadcast-desk" id="broadcast" aria-label="Live broadcast desk">
           <div className="panel monitor-panel">
-            <div className="panel-heading"><div><span className="section-number">01</span><h2>BROADCAST PREVIEW</h2></div><span className="eyebrow monitor-label"><span className={`status-dot ${stateQuery.isError ? 'offline' : broadcast.paused ? 'waiting' : 'connected'}`} />{stateQuery.isError ? 'OFFLINE' : broadcast.paused ? 'PAUSED' : 'ON AIR'}</span></div>
+            <div className="panel-heading"><div><span className="section-number">01</span><h2>BROADCAST PREVIEW</h2></div><span className="eyebrow monitor-label"><span className={`status-dot ${stateQuery.isError ? 'offline' : onAirPaused ? 'waiting' : 'connected'}`} />{stateQuery.isError ? 'OFFLINE' : onAirPaused ? 'PAUSED' : 'ON AIR'}</span></div>
             <div className="monitor-housing">
               <span className="screw screw-tl" /><span className="screw screw-tr" /><span className="screw screw-bl" /><span className="screw screw-br" />
               <div className="monitor-top"><span>UHB / FIELD MONITOR</span><span>CH. 07</span></div>
-              <div className="monitor-bezel"><BroadcastPreview enabled={!stateQuery.isError} title={currentClip?.title || 'Station feed'} /></div>
+              <div className="monitor-bezel"><BroadcastPreview enabled={!stateQuery.isError} title={onAirTitle || 'Station feed'} /></div>
               <div className="monitor-bottom"><div className="vent-lines" aria-hidden="true"><i /><i /><i /><i /><i /><i /><i /><i /><i /></div><span>{state.server.width} × {state.server.height} / 4:3</span><span className={`status-dot ${stateQuery.isError ? 'offline' : 'connected'}`} /></div>
             </div>
             <div className="device-receipt">
@@ -302,18 +313,19 @@ function Station({ onUnpaired }: { onUnpaired: (message: string) => void }) {
           </div>
 
           <div className="panel playback-panel">
-            <div className="panel-heading"><div><span className="section-number">02</span><h2>ON THE AIRWAVES</h2></div><span className="eyebrow">{currentClip ? currentClip.category : 'NO CLIP'}</span></div>
+            <div className="panel-heading"><div><span className="section-number">02</span><h2>ON THE AIRWAVES</h2></div><span className="eyebrow">{gameEvent ? 'GAME EVENT' : currentClip ? currentClip.category : 'NO CLIP'}</span></div>
             <div className="playback-body">
-              <div className="now-playing-label"><span className={`status-dot ${stateQuery.isError ? 'offline' : broadcast.paused ? 'waiting' : 'connected'}`} /><span>{stateQuery.isError ? 'CONNECTION LOST' : broadcast.event ? 'EVENT OVERRIDE ACTIVE' : broadcast.paused ? 'PLAYBACK PAUSED' : 'NOW TRANSMITTING'}</span>{currentClip && <span className="clip-reference">CLIP / {String(library.indexOf(currentClip) + 1).padStart(2, '0')}</span>}</div>
-              <h2 className="current-clip-title">{currentClip?.title || 'DEAD AIR.'}</h2>
-              <p className="current-clip-subtitle">{currentClip?.subtitle || 'Your next transmission starts in the content library.'}</p>
-              <div className="playback-timeline"><div className="timeline-meta"><span>{formatTime(playbackPosition)}</span><span>{broadcast.loop ? <><Repeat2 size={12} /> ON REPEAT</> : 'SINGLE PLAY'}<i> / </i>{formatTime(currentClip?.duration || 0)}</span></div><div className="timeline-track" role="progressbar" aria-label="Clip playback position" aria-valuemin={0} aria-valuemax={currentClip?.duration || 1} aria-valuenow={playbackPosition}><span style={{ width: `${progress}%` }} /></div></div>
+              <div className="now-playing-label"><span className={`status-dot ${stateQuery.isError ? 'offline' : onAirPaused ? 'waiting' : 'connected'}`} /><span>{stateQuery.isError ? 'CONNECTION LOST' : gameEvent ? 'GAME EVENT ON AIR' : broadcast.event ? 'EVENT OVERRIDE ACTIVE' : broadcast.paused ? 'PLAYBACK PAUSED' : 'NOW TRANSMITTING'}</span>{onAirClip && <span className="clip-reference">CLIP / {String(library.indexOf(onAirClip) + 1).padStart(2, '0')}</span>}</div>
+              <h2 className="current-clip-title">{onAirTitle || 'DEAD AIR.'}</h2>
+              <p className="current-clip-subtitle">{onAirSubtitle || 'Your next transmission starts in the content library.'}</p>
+              {gameEvent && <p className="advert-resume-context"><Pause size={13} aria-hidden="true" /><span>{currentClip ? <><strong>{currentClip.title}</strong> held at {formatTime(advertPosition)}. {broadcast.paused ? 'Returns paused' : 'Resumes here'} after the event.</> : 'No advert selected. The event plays once.'}</span></p>}
+              <div className="playback-timeline"><div className="timeline-meta"><span>{formatTime(playbackPosition)}</span><span>{gameEvent ? 'PLAYS ONCE' : broadcast.loop ? <><Repeat2 size={12} /> ON REPEAT</> : 'SINGLE PLAY'}<i> / </i>{formatTime(playbackDuration)}</span></div><div className="timeline-track" role="progressbar" aria-label={gameEvent ? 'Game event playback position' : 'Clip playback position'} aria-valuemin={0} aria-valuemax={playbackDuration || 1} aria-valuenow={playbackPosition}><span style={{ width: `${progress}%` }} /></div></div>
               <div className="transport-controls">
-                <Button variant="outline" size="icon" aria-label="Previous clip" disabled={disabled || !library.length} onClick={() => send({ action: 'previous' })}><SkipBack /></Button>
-                <Button className="pause-button" disabled={disabled || !currentClip} onClick={() => send({ action: 'toggle-pause' })}>{commandMutation.isPending ? <LoaderCircle className="spin" /> : broadcast.paused ? <Play fill="currentColor" /> : <Pause fill="currentColor" />}{broadcast.paused ? 'Resume broadcast' : 'Pause broadcast'}</Button>
-                <Button variant="outline" size="icon" aria-label="Next clip" disabled={disabled || !library.length} onClick={() => send({ action: 'next' })}><SkipForward /></Button>
+                <Button variant="outline" size="icon" aria-label="Previous clip" disabled={transportDisabled || !library.length} onClick={() => send({ action: 'previous' })}><SkipBack /></Button>
+                <Button className="pause-button" disabled={transportDisabled || !currentClip} onClick={() => send({ action: 'toggle-pause' })}>{commandMutation.isPending ? <LoaderCircle className="spin" /> : gameEvent ? <Film /> : broadcast.paused ? <Play fill="currentColor" /> : <Pause fill="currentColor" />}{gameEvent ? 'Event playing' : broadcast.paused ? 'Resume broadcast' : 'Pause broadcast'}</Button>
+                <Button variant="outline" size="icon" aria-label="Next clip" disabled={transportDisabled || !library.length} onClick={() => send({ action: 'next' })}><SkipForward /></Button>
               </div>
-              <div className="secondary-controls"><Button variant="ghost" disabled={disabled || !currentClip} onClick={() => send({ action: 'replay' })}><RotateCcw /> Replay</Button><Button variant="ghost" className={broadcast.loop ? 'loop-enabled' : ''} aria-pressed={broadcast.loop} disabled={disabled || !currentClip} onClick={() => send({ action: 'loop', enabled: !broadcast.loop })}><Repeat2 /> Loop {broadcast.loop ? 'on' : 'off'}{broadcast.loop && <Check size={12} />}</Button><Button variant="ghost" disabled={!currentClip} onClick={() => setPreview(currentClip ?? null)}><Smartphone /> Preview</Button></div>
+              <div className="secondary-controls"><Button variant="ghost" disabled={transportDisabled || !currentClip} onClick={() => send({ action: 'replay' })}><RotateCcw /> Replay</Button><Button variant="ghost" className={broadcast.loop ? 'loop-enabled' : ''} aria-pressed={broadcast.loop} disabled={disabled || !currentClip} onClick={() => send({ action: 'loop', enabled: !broadcast.loop })}><Repeat2 /> {gameEvent ? 'Advert loop' : 'Loop'} {broadcast.loop ? 'on' : 'off'}{broadcast.loop && <Check size={12} />}</Button><Button variant="ghost" disabled={!onAirClip} onClick={() => setPreview(onAirClip ?? null)}><Smartphone /> Preview</Button></div>
               <div className="broadcast-target"><RadioTower size={14} /><span>Playback controls change the badge broadcast.</span></div>
             </div>
             <div className="round-controls">
@@ -324,13 +336,17 @@ function Station({ onUnpaired }: { onUnpaired: (message: string) => void }) {
           </div>
         </section>
 
+        <GameEventControls state={state} now={now} disabled={disabled} send={send} onPreview={setPreview} />
+
         <div className="programming-layout">
           <section className="library-section" id="library" aria-labelledby="library-heading">
             <div className="library-heading"><div><span className="eyebrow">FRESH FROM THE LOWER LEVELS</span><h2 id="library-heading">CONTENT LIBRARY<span>{String(library.length).padStart(2, '0')}</span></h2></div><UploadDialog onFailure={handleFailure} /></div>
             <div className="library-toolbar"><div className="library-filters" aria-label="Filter clips by category">{categories.map((item) => <button type="button" key={item.value} aria-pressed={category === item.value} className={category === item.value ? 'active' : ''} onClick={() => setCategory(item.value)}>{item.label}</button>)}</div><label className="library-search"><Search size={17} /><Input value={search} onChange={(event) => setSearch(event.target.value)} aria-label="Search clips" placeholder="Find a clip…" /></label></div>
             <div className="clip-grid">
               {filteredLibrary.map((clip) => {
-                const active = clip.id === broadcast.clipId
+                const eventClip = clip.category === 'event'
+                const gameEventDefinition = eventClip ? gameEvents.find((event) => event.clipId === clip.id) : undefined
+                const active = clip.id === (gameEvent?.clipId || broadcast.clipId)
                 return <article key={clip.id} className={`clip-card ${active ? 'is-active' : ''}`}>
                   <button className="clip-poster-button" aria-label={`Preview ${clip.title} on this phone`} onClick={() => setPreview(clip)}>
                     <img src={clip.posterUrl} alt={`${clip.title} poster`} loading="lazy" width={160} height={120} />
@@ -340,12 +356,12 @@ function Station({ onUnpaired }: { onUnpaired: (message: string) => void }) {
                     <span className="clip-duration">{formatTime(clip.duration)}</span>
                     {active && <span className="active-clip-tag"><span className="status-dot" />SELECTED</span>}
                   </button>
-                  <div className="clip-card-content"><div className="clip-card-title"><h3>{clip.title}</h3>{active && <Radio size={16} className="accent-text" />}</div><p>{clip.subtitle}</p><div className="clip-card-actions"><Button className="play-clip-button" variant={active ? 'default' : 'outline'} disabled={disabled} onClick={() => send({ action: 'play', clipId: clip.id }, `${clip.title} selected for broadcast.`)}><Play size={13} fill="currentColor" /> Play on badge</Button><Button variant="outline" size="icon" aria-label={`Add ${clip.title} to queue`} title="Add to queue" disabled={disabled} onClick={() => send({ action: 'queue', clipId: clip.id }, `${clip.title} added to the queue.`)}><Plus /></Button></div></div>
+                  <div className="clip-card-content"><div className="clip-card-title"><h3>{clip.title}</h3>{active && <Radio size={16} className="accent-text" />}</div><p>{clip.subtitle}</p><div className="clip-card-actions"><Button className="play-clip-button" variant={active ? 'default' : 'outline'} disabled={disabled} onClick={() => send(gameEventDefinition ? { action: 'game-event', eventId: gameEventDefinition.id } : { action: 'play', clipId: clip.id }, eventClip ? `${clip.title} dispatched to the broadcast.` : `${clip.title} selected for broadcast.`)}>{eventClip ? <Zap size={13} /> : <Play size={13} fill="currentColor" />} {eventClip ? 'Dispatch once' : 'Play on badge'}</Button>{!eventClip && <Button variant="outline" size="icon" aria-label={`Add ${clip.title} to queue`} title="Add to queue" disabled={disabled} onClick={() => send({ action: 'queue', clipId: clip.id }, `${clip.title} added to the queue.`)}><Plus /></Button>}</div></div>
                 </article>
               })}
             </div>
             {!filteredLibrary.length && <div className="empty-library"><Film size={32} /><h3>{library.length ? 'NOTHING ON THIS FREQUENCY.' : 'YOUR AIRWAVES ARE OPEN.'}</h3><p>{library.length ? 'Try another category or a different search.' : 'Import your first clip to get the station moving.'}</p>{library.length > 0 && <Button variant="outline" onClick={() => { setCategory('all'); setSearch('') }}>Clear filters</Button>}</div>}
-            <div className="library-footnote"><Eye size={14} /><span>Tap a poster to preview on your phone. Only “Play on badge” changes the broadcast.</span></div>
+            <div className="library-footnote"><Eye size={14} /><span>Tap a poster to preview on your phone without changing the broadcast. “Play on badge” selects a clip; “Dispatch once” plays an event, then returns to the advert. Events never enter the queue or repeat.</span></div>
           </section>
 
           <aside className="programming-sidebar">
