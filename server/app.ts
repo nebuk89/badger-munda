@@ -10,6 +10,7 @@ import type { BadgeDevice, StationState } from '../shared/types.ts'
 import { allowedHosts, equalSecret, localAddresses, type StationConfig } from './config.ts'
 import { FORMAT_IDS, FrameRenderer, packFrame, type WireFormat } from './frames.ts'
 import { FPS, HEIGHT, importVideo, loadLibrary, MAX_UPLOAD_BYTES, WIDTH } from './library.ts'
+import { pairingAddress } from './pairing.ts'
 import { commandSchema, Station } from './station.ts'
 
 interface AppOptions {
@@ -17,11 +18,13 @@ interface AppOptions {
   config: StationConfig
   port: number
   distDir?: string
+  clock?: () => number
 }
 
 export async function createApp(options: AppOptions) {
   const { dataDir, config, port } = options
-  const station = new Station(await loadLibrary(dataDir), dataDir)
+  const clock = options.clock ?? Date.now
+  const station = new Station(await loadLibrary(dataDir), dataDir, clock)
   const frames = new FrameRenderer(dataDir, station)
   const app = express()
   const hosts = allowedHosts(port)
@@ -38,12 +41,17 @@ export async function createApp(options: AppOptions) {
       .find((part) => part.startsWith('ub_session='))?.slice('ub_session='.length)
     if (!token) return undefined
     const until = sessions.get(token)
-    if (until && until > Date.now()) return token
+    if (until && until > clock()) return token
     sessions.delete(token)
     return undefined
   }
+  const hasPairedController = () => {
+    const now = clock()
+    for (const [token, until] of sessions) if (until <= now) sessions.delete(token)
+    return sessions.size > 0
+  }
   const controller: RequestHandler = (req, res, next) => {
-    if (!sessionFor(req)) { res.status(401).json({ error: 'Pair this controller with the code on your Mac.' }); return }
+    if (!sessionFor(req)) { res.status(401).json({ error: 'Pair this controller with the code on the badge or your Mac.' }); return }
     next()
   }
   const deviceAuth: RequestHandler = (req, res, next) => {
@@ -56,11 +64,11 @@ export async function createApp(options: AppOptions) {
     library: station.library,
     broadcast: station.snapshot(),
     devices: [...devices.values()].map(({ sentFrames: _sentFrames, ...device }) => ({
-      ...device, online: Date.now() - device.lastSeen < 8000,
+      ...device, online: clock() - device.lastSeen < 8000,
     })),
     server: {
       name: 'Underhive Broadcast', version: '0.1.0', width: WIDTH, height: HEIGHT, fps: FPS,
-      addresses: localAddresses(port), now: Date.now(),
+      addresses: localAddresses(port), now: clock(),
     },
   })
 
@@ -88,7 +96,7 @@ export async function createApp(options: AppOptions) {
 
   app.get('/api/setup', (req, res) => res.json({ paired: Boolean(sessionFor(req)), name: 'Underhive Broadcast' }))
   app.post('/api/pair', (req, res) => {
-    const now = Date.now()
+    const now = clock()
     for (const [ip, entry] of attempts) if (entry.reset <= now) attempts.delete(ip)
     const ip = req.socket.remoteAddress ?? 'unknown'
     const limit = attempts.get(ip) ?? { count: 0, reset: now + 60_000 }
@@ -101,12 +109,13 @@ export async function createApp(options: AppOptions) {
     if (attempts.size > 1000) attempts.delete(attempts.keys().next().value!)
     const body = z.object({ pin: z.string().regex(/^\d{6}$/) }).safeParse(req.body)
     if (!body.success || !equalSecret(body.data.pin, config.controllerPin)) {
-      res.status(401).json({ error: 'That pairing code does not match. Check the Mac terminal.' }); return
+      res.status(401).json({ error: 'That pairing code does not match. Check the badge or Mac terminal.' }); return
     }
     attempts.delete(ip)
     const token = randomBytes(32).toString('hex')
     sessions.set(token, now + 7 * 24 * 60 * 60_000)
     if (sessions.size > 64) sessions.delete(sessions.keys().next().value!)
+    for (const device of devices.values()) device.awaitingPairing = false
     res.cookie('ub_session', token, { httpOnly: true, sameSite: 'strict', path: '/', maxAge: 7 * 24 * 60 * 60_000 })
     res.json({ ok: true })
   })
@@ -155,10 +164,12 @@ export async function createApp(options: AppOptions) {
     const format: WireFormat = formatResult.data
     const id = idResult.data
     if (!devices.has(id) && devices.size >= 8) { res.status(429).json({ error: 'This station supports eight badges.' }); return }
-    const now = Date.now()
+    const now = clock()
     const device = devices.get(id) ?? {
       id, lastSeen: now, lastFrameAt: null, frameId: null, fps: 0, online: true, format, sentFrames: [],
+      awaitingPairing: !hasPairedController(),
     }
+    if (now - device.lastSeen >= 8000) device.awaitingPairing = !hasPairedController()
     const appliedHeader = req.get('X-Badge-Frame')
     const applied = appliedHeader !== undefined ? Number(appliedHeader) : NaN
     if (Number.isSafeInteger(applied) && device.sentFrames.includes(applied)) {
@@ -170,8 +181,17 @@ export async function createApp(options: AppOptions) {
     device.lastSeen = now
     device.format = format
     devices.set(id, device)
-    const frame = await frames.render()
-    const payload = packFrame(frame.rgba, format, frame.sequence, station.snapshot().paused)
+    let awaitingPairing = device.awaitingPairing
+    let frame = awaitingPairing
+      ? await frames.pairing(config.controllerPin, pairingAddress(req.socket.localAddress, port))
+      : await frames.render()
+    // A phone may pair while Sharp is preparing the first card.
+    if (awaitingPairing && !device.awaitingPairing) {
+      awaitingPairing = false
+      frame = await frames.render()
+    }
+    const broadcast = station.snapshot()
+    const payload = packFrame(frame.rgba, format, frame.sequence, !awaitingPairing && broadcast.paused && !broadcast.event?.clipId)
     device.sentFrames.push(frame.sequence)
     if (device.sentFrames.length > 16) device.sentFrames.shift()
     res.setHeader('X-Frame-Id', frame.sequence)

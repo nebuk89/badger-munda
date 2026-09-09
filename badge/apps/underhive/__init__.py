@@ -31,22 +31,36 @@ _white = None
 _accent = None
 
 
+def _configure_display_rotation():
+    rotation = getattr(config, "DISPLAY_ROTATION", 0)
+    if type(rotation) is not int or rotation not in (0, 180):
+        raise ValueError("DISPLAY_ROTATION must be 0 or 180")
+    from badgeware import display
+    if not callable(getattr(display, "command", None)):
+        raise UnsupportedFirmware("display.command absent")
+    # MonaOS starts with MADCTL 0x90. Reverse both axes, preserving scan order.
+    # The native binding takes a tuple, not bytes or an integer.
+    display.command(0x36, (0x50 if rotation == 180 else 0x90,))
+
+
 def _wifi_credentials():
-    # Read the saved file directly; a previously imported frozen secrets module
-    # can still contain the factory network settings.
-    try:
-        with open("/secrets.py", "r") as source:
-            settings = {}
-            exec(source.read(), settings)
+    # MonaOS restores /secrets.py from /system on a hardware reset.
+    # Read the persistent file before either the boot copy or a cached module.
+    for filename in ("/system/secrets.py", "/secrets.py"):
+        try:
+            with open(filename, "r") as source:
+                settings = {}
+                exec(source.read(), settings)
+        except OSError as error:
+            if not error.args or error.args[0] != 2:
+                raise
+            continue
         ssid = settings.get("WIFI_SSID")
         password = settings.get("WIFI_PASSWORD")
         if not isinstance(ssid, str) or not isinstance(password, str):
             raise ValueError("invalid saved Wi-Fi settings")
-        print("Underhive Wi-Fi source: saved file")
+        print("Underhive Wi-Fi source:", filename)
         return (ssid, password) if ssid else None
-    except OSError as error:
-        if not error.args or error.args[0] != 2:
-            raise
     sys.path.insert(0, "/")
     try:
         from secrets import WIFI_SSID, WIFI_PASSWORD
@@ -94,6 +108,7 @@ def init():
     _white = brushes.color(215, 220, 220)
     _accent = brushes.color(220, 250, 85)
     try:
+        _configure_display_rotation()
         import network
         import socket
         import select
@@ -111,7 +126,7 @@ def init():
         _credentials = _wifi_credentials()
         _wlan = network.WLAN(network.STA_IF)
         if not _wlan.isconnected() and _credentials is None:
-            _notice = "Set Wi-Fi in secrets.py"
+            _notice = "Set Wi-Fi on BADGER drive"
             return
         gc.collect()
         print("Underhive RAM: before display", gc.mem_free())

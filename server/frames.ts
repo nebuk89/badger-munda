@@ -4,6 +4,7 @@ import { crc32, deflateSync } from 'node:zlib'
 import sharp from 'sharp'
 import type { Broadcast } from '../shared/types.ts'
 import { FPS, HEIGHT, WIDTH } from './library.ts'
+import { pairingSvg } from './pairing.ts'
 import type { Station } from './station.ts'
 
 export type WireFormat = 'rgba' | 'rgb565' | 'rgb332' | 'png'
@@ -109,33 +110,54 @@ interface RenderedFrame {
 
 export class FrameRenderer {
   private cached?: RenderedFrame
-  private pending?: { key: string; promise: Promise<RenderedFrame> }
+  private pending = new Map<string, Promise<RenderedFrame>>()
+  private pairingImages = new Map<string, Promise<Buffer>>()
   private sequence = 0
   constructor(private dataDir: string, private station: Station) {}
 
   async render() {
     const state = this.station.snapshot()
-    const clip = this.station.clip
-    const index = Math.min(clip.frameCount - 1, Math.floor(state.position * clip.fps))
-    const key = state.event
-      ? `event:${state.event.title}:${state.event.detail}:${state.event.expiresAt}`
+    const video = state.event?.clipId ? state.event : null
+    const clip = video ? this.station.library.find((clip) => clip.id === video.clipId) : this.station.clip
+    if (!clip) throw new Error('Game event video unavailable.')
+    const position = video ? Math.max(0, (this.station.now - video.startedAt) / 1000) : state.position
+    const index = Math.min(clip.frameCount - 1, Math.floor(position * clip.fps))
+    const key = video ? `game-event:${clip.id}:${video.startedAt}:${index}`
+      : state.event ? `event:${state.event.title}:${state.event.detail}:${state.event.expiresAt}`
       : `${clip.id}:${index}`
-    if (this.cached?.key === key) return this.cached
-    if (this.pending?.key === key) return this.pending.promise
-    const promise = this.load(state, clip.id, index, key)
-    this.pending = { key, promise }
-    try { return await promise }
-    finally { if (this.pending?.promise === promise) this.pending = undefined }
+    return this.renderFrame(key, () => state.event && !state.event.clipId
+      ? sharp(eventSvg(state.event)).ensureAlpha().raw().toBuffer()
+      : readFile(path.join(this.dataDir, 'library', clip.id, 'frames', `${String(index).padStart(4, '0')}.rgba`)))
   }
 
-  private async load(state: Broadcast, id: string, index: number, key: string) {
-    const rgba = state.event
-      ? await sharp(eventSvg(state.event)).ensureAlpha().raw().toBuffer()
-      : await readFile(path.join(this.dataDir, 'library', id, 'frames', `${String(index).padStart(4, '0')}.rgba`))
-    if (rgba.length !== WIDTH * HEIGHT * 4) throw new Error(`Invalid frame in ${id}.`)
-    const frame: RenderedFrame = { key, sequence: ++this.sequence >>> 0, rgba }
-    this.cached = frame
-    return frame
+  async pairing(pin: string, address: string) {
+    const key = `pairing:${address}:${pin}`
+    return this.renderFrame(key, async () => {
+      let image = this.pairingImages.get(key)
+      if (!image) {
+        image = sharp(pairingSvg(pin, address)).ensureAlpha().raw().toBuffer()
+        this.pairingImages.set(key, image)
+        if (this.pairingImages.size > 8) this.pairingImages.delete(this.pairingImages.keys().next().value!)
+      }
+      try { return await image }
+      catch (error) { this.pairingImages.delete(key); throw error }
+    })
+  }
+
+  private async renderFrame(key: string, load: () => Promise<Buffer>) {
+    if (this.cached?.key === key) return this.cached
+    const pending = this.pending.get(key)
+    if (pending) return pending
+    // Pairing and programme frames share both the cache and sequence allocator.
+    const promise = load().then((rgba) => {
+      if (rgba.length !== WIDTH * HEIGHT * 4) throw new Error('Invalid RGBA frame length.')
+      const frame: RenderedFrame = { key, sequence: ++this.sequence >>> 0, rgba }
+      this.cached = frame
+      return frame
+    })
+    this.pending.set(key, promise)
+    try { return await promise }
+    finally { this.pending.delete(key) }
   }
 
   async png() {

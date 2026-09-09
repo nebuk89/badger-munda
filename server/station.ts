@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { z } from 'zod'
 import type { Broadcast, Clip, Command } from '../shared/types.ts'
+import { gameEvents } from '../shared/game-events.ts'
 import { writePrivateJson } from './config.ts'
 
 export const commandSchema = z.discriminatedUnion('action', [
@@ -14,6 +15,7 @@ export const commandSchema = z.discriminatedUnion('action', [
     action: z.literal('event'), title: z.string().trim().min(1).max(32),
     detail: z.string().trim().max(64), duration: z.number().min(1).max(60),
   }),
+  z.object({ action: z.literal('game-event'), eventId: z.enum(gameEvents.map((event) => event.id)) }),
 ])
 
 const savedStateSchema = z.object({
@@ -28,10 +30,11 @@ export class Station {
   private seenCommands = new Map<string, { fingerprint: string; at: number }>()
   private stateFile: string | undefined
   constructor(public library: Clip[], dataDir?: string, private clock = Date.now) {
-    if (!library.length) throw new Error('No content found. Run npm run content first.')
+    const firstClip = this.programme[0]
+    if (!firstClip) throw new Error('No programme clips found. Run npm run content first.')
     const now = clock()
     this.state = {
-      revision: 1, clipId: library[0].id, paused: false, loop: false,
+      revision: 1, clipId: firstClip.id, paused: false, loop: false,
       startedAt: now, position: 0, round: 1, event: null, queue: [],
     }
     this.anchor = now
@@ -39,8 +42,8 @@ export class Station {
       this.stateFile = path.join(dataDir, 'station.json')
       if (existsSync(this.stateFile)) {
         const saved = savedStateSchema.parse(JSON.parse(readFileSync(this.stateFile, 'utf8')))
-        if (library.some((clip) => clip.id === saved.clipId)) {
-          Object.assign(this.state, saved, { queue: saved.queue.filter((id) => library.some((clip) => clip.id === id)) })
+        if (this.programme.some((clip) => clip.id === saved.clipId)) {
+          Object.assign(this.state, saved, { queue: saved.queue.filter((id) => this.programme.some((clip) => clip.id === id)) })
           this.state.position = Math.min(saved.position, this.clip.duration - 1 / this.clip.fps)
         }
       }
@@ -48,6 +51,8 @@ export class Station {
   }
 
   get clip() { return this.library.find((clip) => clip.id === this.state.clipId)! }
+  get now() { return this.clock() }
+  private get programme() { return this.library.filter((clip) => clip.category !== 'event') }
 
   private save() {
     if (this.stateFile) writePrivateJson(this.stateFile, {
@@ -57,7 +62,7 @@ export class Station {
   }
 
   private select(id: string, now: number) {
-    if (!this.library.some((clip) => clip.id === id)) throw new Error('Unknown clip.')
+    if (!this.programme.some((clip) => clip.id === id)) throw new Error('Unknown clip.')
     this.state.clipId = id
     this.state.position = 0
     this.state.startedAt = now
@@ -65,23 +70,37 @@ export class Station {
   }
 
   private step(direction: number, now: number) {
-    const index = this.library.findIndex((clip) => clip.id === this.state.clipId)
-    const next = (index + direction + this.library.length) % this.library.length
-    this.select(this.library[next].id, now)
+    const programme = this.programme
+    const index = programme.findIndex((clip) => clip.id === this.state.clipId)
+    const next = (index + direction + programme.length) % programme.length
+    this.select(programme[next].id, now)
+  }
+
+  private startGameClip(id: string, now: number) {
+    const clip = this.library.find((clip) => clip.id === id && clip.category === 'event')
+    if (!clip) throw new Error('Game event video unavailable. Run npm run content and restart the station.')
+    this.state.event = {
+      title: clip.title, detail: clip.subtitle, clipId: clip.id,
+      startedAt: now, expiresAt: now + clip.duration * 1000,
+    }
   }
 
   snapshot(): Broadcast {
     const now = this.clock()
+    // Charge only time after a game video ends, even if nobody polls during it.
+    if (this.state.event?.clipId) {
+      this.anchor = Math.max(this.anchor, Math.min(now, this.state.event.expiresAt))
+    }
     if (!this.state.paused) {
       this.state.position += Math.max(0, now - this.anchor) / 1000
       this.anchor = now
       // Collapse whole cycles after a sleeping Mac without an unbounded catch-up loop.
       if (!this.state.queue.length) {
-        const cycle = this.state.loop ? this.clip.duration : this.library.reduce((sum, clip) => sum + clip.duration, 0)
+        const cycle = this.state.loop ? this.clip.duration : this.programme.reduce((sum, clip) => sum + clip.duration, 0)
         this.state.position %= cycle
       }
       let transitions = 0
-      while (this.state.position >= this.clip.duration && transitions < this.library.length + 33) {
+      while (this.state.position >= this.clip.duration && transitions < this.programme.length + 33) {
         const remaining = this.state.position - this.clip.duration
         const next = this.state.queue.shift()
         if (next) this.select(next, now - remaining * 1000)
@@ -94,6 +113,7 @@ export class Station {
       }
       if (transitions) this.save()
     }
+    this.anchor = now
     if (this.state.event && now >= this.state.event.expiresAt) {
       this.state.event = null
       this.state.revision++
@@ -116,14 +136,30 @@ export class Station {
     const before = { ...this.state, queue: [...this.state.queue] }
     const previousAnchor = this.anchor
     switch (command.action) {
-      case 'play': this.select(command.clipId, now); this.state.paused = false; this.state.event = null; break
-      case 'replay': this.select(this.state.clipId, now); this.state.paused = false; break
-      case 'next': this.step(1, now); break
-      case 'previous': this.step(-1, now); break
+      case 'play':
+        if (this.library.some((clip) => clip.id === command.clipId && clip.category === 'event')) {
+          this.startGameClip(command.clipId, now)
+        } else {
+          this.select(command.clipId, now)
+          this.state.paused = false
+          this.state.event = null
+        }
+        break
+      case 'replay':
+        this.select(this.state.clipId, now)
+        this.state.paused = false
+        if (this.state.event?.clipId) this.state.event = null
+        break
+      case 'next':
+      case 'previous':
+        this.step(command.action === 'next' ? 1 : -1, now)
+        if (this.state.event?.clipId) this.state.event = null
+        break
       case 'toggle-pause': this.state.paused = !this.state.paused; this.anchor = now; break
       case 'loop': this.state.loop = command.enabled; break
       case 'queue':
         if (!this.library.some((clip) => clip.id === command.clipId)) throw new Error('Unknown clip.')
+        if (!this.programme.some((clip) => clip.id === command.clipId)) throw new Error('Game events cannot enter the advert queue. Dispatch the event instead.')
         if (this.state.queue.length >= 32) throw new Error('The queue is full. Remove a queued clip first.')
         this.state.queue.push(command.clipId)
         break
@@ -135,6 +171,12 @@ export class Station {
       case 'event':
         this.state.event = { title: command.title, detail: command.detail, expiresAt: now + command.duration * 1000 }
         break
+      case 'game-event': {
+        const preset = gameEvents.find((event) => event.id === command.eventId)
+        if (!preset) throw new Error('Unknown game event.')
+        this.startGameClip(preset.clipId, now)
+        break
+      }
       case 'clear-event': this.state.event = null; break
     }
     this.state.revision++

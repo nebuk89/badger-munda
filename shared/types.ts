@@ -1,3 +1,5 @@
+import type { GameEventId } from './game-events.ts'
+
 export interface Clip {
   id: string
   title: string
@@ -13,11 +15,16 @@ export interface Clip {
   videoUrl: string
 }
 
-export interface BroadcastEvent {
+interface EventNotice {
   title: string
   detail: string
   expiresAt: number
 }
+
+export type BroadcastEvent = EventNotice & (
+  | { clipId: string; startedAt: number }
+  | { clipId?: never; startedAt?: never }
+)
 
 export interface Broadcast {
   revision: number
@@ -38,6 +45,7 @@ export interface BadgeDevice {
   frameId: number | null
   fps: number
   online: boolean
+  awaitingPairing: boolean
   format: string
 }
 
@@ -63,3 +71,4 @@ export type Command =
   | { action: 'queue'; clipId: string }
   | { action: 'round'; round: number }
   | { action: 'event'; title: string; detail: string; duration: number }
+  | { action: 'game-event'; eventId: GameEventId }

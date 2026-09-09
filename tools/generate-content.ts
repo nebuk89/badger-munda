@@ -81,7 +81,7 @@ async function main() {
 Usage: npx tsx tools/generate-content.ts
        DATA_DIR=./data npx tsx tools/generate-content.ts
 
-Creates three 8-second, 8-fps clips in DATA_DIR/library (default: ./data/library).
+Creates ${artworks.length} 8-second, 8-fps clips in DATA_DIR/library (default: ./data/library).
 Each clip contains a manifest, 64 PNG/RGBA badge frames, a poster and an MP4.
 Complete existing clips are kept. Incomplete or incompatible clips cause an
 error without modifying them; move them aside before retrying.`)

@@ -8,7 +8,7 @@ try:
     output, error = transport.exec_raw("""
 import network, time, gc
 saved = {}
-exec(open("/secrets.py").read(), saved)
+exec(open("/system/secrets.py").read(), saved)
 w = network.WLAN(network.STA_IF)
 w.active(False)
 time.sleep_ms(300)
