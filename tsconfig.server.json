@@ -10,5 +10,5 @@
     "types": ["node"],
     "esModuleInterop": true
   },
-  "include": ["server/**/*.ts", "tools/**/*.ts", "shared/**/*.ts"]
+  "include": ["server/**/*.ts", "tools/**/*.ts", "shared/**/*.ts", "api/**/*.ts", "drizzle.config.ts"]
 }

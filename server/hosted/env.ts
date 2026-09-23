@@ -1,0 +1,14 @@
+export function requiredEnv(name: string) {
+  const value = process.env[name]
+  if (!value) throw new Error(`${name} is required.`)
+  return value
+}
+
+export function hostedConfig() {
+  return {
+    appOrigin: new URL(requiredEnv('APP_ORIGIN')).origin,
+    adminPasswordHash: requiredEnv('ADMIN_PASSWORD_HASH'),
+    sessionPepper: requiredEnv('SESSION_TOKEN_PEPPER'),
+    rateLimitKey: requiredEnv('IP_RATE_LIMIT_HMAC_KEY'),
+  }
+}

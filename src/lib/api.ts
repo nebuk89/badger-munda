@@ -3,6 +3,9 @@ import type { Clip, Command, StationState } from '../../shared/types'
 export interface Setup {
   paired: boolean
   name: string
+  authMode?: 'pin' | 'password'
+  csrfToken?: string
+  expiresAt?: number
 }
 
 export class ApiError extends Error {
@@ -13,6 +16,17 @@ export class ApiError extends Error {
     this.name = 'ApiError'
     this.status = status
   }
+}
+
+let csrfToken = ''
+let hostedMode = false
+
+export function setCsrfToken(value?: string) {
+  csrfToken = value ?? ''
+}
+
+export function setHostedMode(value: boolean) {
+  hostedMode = value
 }
 
 function responseError(value: unknown, fallback: string) {
@@ -40,6 +54,7 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
       signal: controller.signal,
       headers: {
         ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+        ...(!['GET', 'HEAD'].includes(options.method ?? 'GET') && csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
         ...options.headers,
       },
     })
@@ -48,16 +63,30 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     try {
       data = text ? JSON.parse(text) : undefined
     } catch {
-      throw new ApiError('Unexpected server response. Check that the Mac station is running.', response.status)
+      throw new ApiError(
+        hostedMode ? 'The service returned an unreadable response.' : 'Unexpected server response. Check that the Mac station is running.',
+        response.status,
+      )
     }
     if (!response.ok) {
-      throw new ApiError(responseError(data, `The station could not complete this request (${response.status}).`), response.status)
+      throw new ApiError(responseError(
+        data,
+        hostedMode
+          ? `The service could not complete this request (${response.status}).`
+          : `The station could not complete this request (${response.status}).`,
+      ), response.status)
     }
     return data as T
   } catch (error) {
     if (error instanceof ApiError) throw error
-    if (controller.signal.aborted) throw new ApiError('The station did not respond in time. Check the Mac and your Wi-Fi.')
-    throw new ApiError('Cannot reach the Mac station. Keep both devices on the same Wi-Fi.')
+    if (controller.signal.aborted) {
+      throw new ApiError(hostedMode
+        ? 'The service did not respond in time. Check the connection and try again.'
+        : 'The station did not respond in time. Check the Mac and your Wi-Fi.')
+    }
+    throw new ApiError(hostedMode
+      ? 'Cannot reach the service. Check the connection and try again.'
+      : 'Cannot reach the Mac station. Keep both devices on the same Wi-Fi.')
   } finally {
     window.clearTimeout(timeout)
     options.signal?.removeEventListener('abort', abort)
@@ -74,10 +103,15 @@ export function requestId() {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
-export function command(command: Command) {
+export function command(command: Command, revision: number) {
+  const id = requestId()
   return api<StationState>('/api/command', {
     method: 'POST',
-    body: JSON.stringify({ ...command, requestId: requestId() }),
+    headers: {
+      'Idempotency-Key': id,
+      'If-Match': `"station-revision-${revision}"`,
+    },
+    body: JSON.stringify({ ...command, requestId: id }),
   })
 }
 
