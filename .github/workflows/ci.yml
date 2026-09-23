@@ -66,5 +66,8 @@ jobs:
       - name: Install Chromium and its system dependencies
         run: pnpm exec playwright install --with-deps chromium
 
+      - name: Test the hosted controller
+        run: pnpm run test:ui:hosted
+
       - name: Test the desktop and phone controller
         run: pnpm run test:ui

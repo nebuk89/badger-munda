@@ -3,6 +3,11 @@
 A local television station for a GitHub Badger 2350 and a phone.
 The Mac serves the content over Wi-Fi. The phone controls playback and previews videos independently.
 
+The repository also contains a hosted deployment path.
+Vercel serves the responsive controller and Node API.
+Neon stores the shared station, controller sessions, badge identities, claims, receipts, and audit events.
+Public Vercel Blob objects serve immutable indexed PNG frames, posters, and MP4 previews.
+
 ## What it does
 
 - Plays thirteen original animated adverts, plus videos you import.
@@ -16,6 +21,53 @@ The Mac serves the content over Wi-Fi. The phone controls playback and previews 
 The phone preview shows the server's output, not a camera view of the badge.
 Device acknowledgements show which frame the client reports as applied.
 The system does not promise frame-accurate synchronisation between devices.
+
+## Deploy the hosted station
+
+The hosted station uses one private admin password.
+All claimed badges receive the same shared broadcast.
+The browser uses an HTTP-only session cookie and an in-memory CSRF token.
+Each badge uses a separate random device secret.
+The service stores only hashes of passwords, session tokens, claim codes, and badge secrets.
+
+1. Create a Neon PostgreSQL database and a public Vercel Blob store.
+2. Create the admin password hash with `npm run auth:hash`.
+3. Set the runtime environment variables below in Vercel.
+4. Run `npm run db:migrate` against the Neon database.
+5. Run `npm run content:hosted` to make the immutable hosted package.
+6. Set `BLOB_READ_WRITE_TOKEN`, then run `npm run content:upload`.
+7. Set the catalog URL and Blob base URL from the upload output.
+8. Deploy the repository to Vercel.
+
+The runtime needs these environment variables:
+
+| Variable | Purpose |
+|---|---|
+| `APP_ORIGIN` | Exact HTTPS origin of the published controller |
+| `DATABASE_URL` | Neon pooled PostgreSQL connection string |
+| `ADMIN_PASSWORD_HASH` | Versioned scrypt hash from `npm run auth:hash` |
+| `SESSION_TOKEN_PEPPER` | Random key for controller CSRF derivation |
+| `CLAIM_CODE_HMAC_KEY` | Random key for six-digit claim-code hashes |
+| `DEVICE_SECRET_HMAC_KEY` | Random key for badge-secret hashes |
+| `IP_RATE_LIMIT_HMAC_KEY` | Random key for private rate-limit subjects |
+| `CONTENT_CATALOG_URL` | Public URL of the content-hashed `catalog.json` |
+| `CONTENT_BLOB_BASE_URL` | Public Blob root before `content/v1/...` |
+
+Use separate random values for every key.
+Do not put the admin password, badge secrets, claim codes, or database URL in source control.
+`BLOB_READ_WRITE_TOKEN` is only needed by the upload tool.
+The deployed API does not need that token.
+
+The hosted package contains complete UBF1 objects with indexed PNG payloads.
+It contains 1,216 frames for the nineteen built-in clips and is approximately 11.7 MiB.
+It does not contain raw RGBA frames.
+The hosted controller does not support custom video upload in the MVP.
+
+The hosted badge protocol is version 2.
+The badge calls `POST /api/device/sync` through HTTPS, then fetches the selected frame directly from public Blob.
+The badge must validate certificates and SNI for both domains.
+It must reuse connections, skip late frames, keep bounded memory, and reconnect with backoff.
+Release still depends on physical MonaOS checks for DNS, NTP, CA loading, socket polling, and TLS memory.
 
 ## Start the Mac station
 
@@ -219,6 +271,8 @@ The controller disables those transport controls during game videos to avoid acc
 
 ## HTTP interface
 
+The local station keeps the interface below.
+
 | Endpoint | Purpose | Authentication |
 |---|---|---|
 | `GET /api/setup` | Check whether this controller is paired | None |
@@ -257,11 +311,36 @@ Flag bit 0 marks paused playback. It stays clear while a game video plays over a
 The device reports a rendered frame through `X-Badge-Frame` on its next request.
 It can report measured speed through `X-Badge-Fps`.
 
+### Hosted HTTP interface
+
+| Endpoint | Purpose | Authentication |
+|---|---|---|
+| `GET /api/setup` | Get hosted login and session state | None |
+| `POST /api/auth/login` | Start a controller session with `{ "password": "..." }` | Admin password |
+| `POST /api/logout` | End the current controller session | Cookie and CSRF |
+| `GET /api/state` | Get the shared station and badge status | Controller cookie |
+| `POST /api/command` | Change the shared station | Cookie, CSRF, `If-Match`, idempotency key |
+| `GET /api/badges` | List registered badges and presence | Controller cookie |
+| `POST /api/badges` | Create a badge identity and one-time secret | Cookie and CSRF |
+| `POST /api/badges/claim` | Claim a badge with a six-digit code | Cookie and CSRF |
+| `POST /api/badges/:id/rotate-secret` | Rotate a badge secret with 24-hour overlap | Cookie and CSRF |
+| `POST /api/badges/:id/revoke` | Revoke a badge | Cookie and CSRF |
+| `POST /api/device/sync` | Send a receipt and get current playback | Badge authorization header |
+| `GET /api/health/live` | Check the Function process | None |
+| `GET /api/health/ready` | Check the Neon connection | None |
+
+Controller commands use the current station revision in `If-Match`.
+The service returns `409` when another controller changed the station first.
+The controller then reloads the current state.
+The service applies durable limits to login attempts, controller writes, claim attempts, and device sync.
+Audit records contain action metadata but do not contain passwords, claim codes, badge secrets, or controller tokens.
+
 ## Checks
 
 GitHub Actions runs `.github/workflows/ci.yml` on pushes, pull requests, and manual runs.
 The job uses GitHub's `ubuntu-24.04-arm` runner with ARM64 Node.js 24 and Python 3.12.
 It runs lint, server and artwork tests, badge and setup tests, the production build, and desktop/phone browser tests.
+It also runs the hosted login and badge-management browser test without external service credentials.
 The job generates its own sample frames and installs Chromium. It needs no badge, Wi-Fi credentials, or repository secrets.
 
 ```sh
@@ -271,12 +350,14 @@ npm run lint
 python3 -m unittest discover -s device -p 'test_*.py'
 python3 -m unittest discover -s badge/tests -p 'test_*.py'
 npm run test:ui
+npm run test:ui:hosted
 ```
 
 The Node suite covers commands, pause/replay, queue behaviour, authentication, frame encoding, previews, and real FFmpeg conversion.
 The Python menu suite covers pagination and access to the original apps.
 The badge suite covers frame parsing, RAM storage, connection feedback, and transport recovery.
 The browser suite covers desktop and phone controls with independent video previews.
+The hosted browser suite covers password login, CSRF command headers, badge creation, badge claims, and responsive layout.
 Desktop results do not establish physical badge performance.
 
 ## Hardware references

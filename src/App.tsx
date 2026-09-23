@@ -14,8 +14,9 @@ import { BroadcastPreview } from './components/BroadcastPreview'
 import { ClipPreview } from './components/ClipPreview'
 import { ConnectDialog } from './components/ConnectDialog'
 import { GameEventControls } from './components/GameEventControls'
+import { HostedBadgesDialog } from './components/HostedBadgesDialog'
 import { UploadDialog } from './components/UploadDialog'
-import { ApiError, api, command, errorMessage, type Setup } from './lib/api'
+import { ApiError, api, command, errorMessage, setCsrfToken, type Setup } from './lib/api'
 import './App.css'
 
 const queryClient = new QueryClient({
@@ -47,11 +48,22 @@ function Pairing({ setup, loading, error, onRetry, sessionNotice }: {
   sessionNotice: string
 }) {
   const client = useQueryClient()
+  const hosted = setup?.authMode === 'password'
   const [pin, setPin] = useState('')
   const pair = useMutation({
-    mutationFn: () => api<{ ok: true }>('/api/pair', { method: 'POST', body: JSON.stringify({ pin }) }),
-    onSuccess: () => {
-      client.setQueryData<Setup>(['setup'], { paired: true, name: setup?.name || 'Underhive Broadcast' })
+    mutationFn: () => api<{ ok: true; csrfToken?: string; expiresAt?: number }>(
+      hosted ? '/api/auth/login' : '/api/pair',
+      { method: 'POST', body: JSON.stringify(hosted ? { password: pin } : { pin }) },
+    ),
+    onSuccess: (result) => {
+      setCsrfToken(result.csrfToken)
+      client.setQueryData<Setup>(['setup'], {
+        paired: true,
+        name: setup?.name || 'Underhive Broadcast',
+        authMode: setup?.authMode,
+        csrfToken: result.csrfToken,
+        expiresAt: result.expiresAt,
+      })
     },
   })
 
@@ -64,37 +76,38 @@ function Pairing({ setup, loading, error, onRetry, sessionNotice }: {
           <h1>SMALL SCREEN.<br /><span>BIG TROUBLE.</span></h1>
           <p>Bring the underhive to your tabletop. Run the adverts, raise the alarm, and give every round a little atmosphere.</p>
           <div className="pairing-insignia" aria-hidden="true"><RadioTower /><span>UHB—07</span><i>KEEP THE SIGNAL ALIVE</i></div>
-          <div className="pairing-footnote"><span>LOCAL NETWORK</span><span>NO CLOUD. NO OVERSEERS.</span></div>
+          <div className="pairing-footnote"><span>{hosted ? 'HOSTED SIGNAL' : 'LOCAL NETWORK'}</span><span>{hosted ? 'PRIVATE CONTROL. PUBLIC AIRWAVES.' : 'NO CLOUD. NO OVERSEERS.'}</span></div>
         </div>
         <section className="access-panel">
           <div className="panel-heading"><span className="eyebrow">Operator access</span><LockKeyhole size={17} /></div>
           {loading ? (
-            <div className="access-content"><LoaderCircle className="spin accent-text" size={32} /><h2>FINDING YOUR STATION.</h2><p>Checking the Mac connection. This should only take a moment.</p></div>
+            <div className="access-content"><LoaderCircle className="spin accent-text" size={32} /><h2>FINDING YOUR STATION.</h2><p>{hosted ? 'Checking the hosted service. This should only take a moment.' : 'Checking the Mac connection. This should only take a moment.'}</p></div>
           ) : error ? (
             <div className="access-content">
               <WifiOff className="accent-text" size={32} />
               <h2>NO SIGNAL. YET.</h2>
               <p className="inline-error" role="alert">{errorMessage(error)}</p>
-              <p>Start the station on your Mac. Keep this device on the same Wi-Fi, then try again.</p>
+              <p>{hosted ? 'Check the Internet connection, then try again.' : 'Start the station on your Mac. Keep this device on the same Wi-Fi, then try again.'}</p>
               <Button onClick={onRetry}><RefreshCw /> Try connection again</Button>
             </div>
           ) : (
-            <form className="access-content" onSubmit={(event) => { event.preventDefault(); if (/^\d{6}$/.test(pin) && !pair.isPending) pair.mutate() }}>
-              <span className="connection-pill"><span className="status-dot connected" /> Mac station found</span>
-              <h2>YOU’RE OFF THE GRID.<br />LET’S GET YOU ON AIR.</h2>
-              <p>Enter the six-digit pairing code shown in your Mac terminal.</p>
+            <form className="access-content" onSubmit={(event) => { event.preventDefault(); if ((hosted ? pin.length > 0 : /^\d{6}$/.test(pin)) && !pair.isPending) pair.mutate() }}>
+              <span className="connection-pill"><span className="status-dot connected" /> {hosted ? 'Hosted station found' : 'Mac station found'}</span>
+              <h2>{hosted ? <>PRIVATE SIGNAL.<br />AUTHORIZED OPERATORS.</> : <>YOU’RE OFF THE GRID.<br />LET’S GET YOU ON AIR.</>}</h2>
+              <p>{hosted ? 'Enter the private controller password.' : 'Enter the six-digit pairing code shown in your Mac terminal.'}</p>
               {sessionNotice && <p className="session-notice" role="status">{sessionNotice}</p>}
-              <label className="field-label" htmlFor="pairing-pin">Station pairing code</label>
+              <label className="field-label" htmlFor="pairing-pin">{hosted ? 'Controller password' : 'Station pairing code'}</label>
               <Input
                 id="pairing-pin"
-                className="pin-input"
+                className={hosted ? 'password-input' : 'pin-input'}
+                type={hosted ? 'password' : 'text'}
                 value={pin}
-                onChange={(event) => { setPin(event.target.value.replace(/\D/g, '').slice(0, 6)); pair.reset() }}
-                inputMode="numeric"
-                autoComplete="one-time-code"
-                pattern="[0-9]{6}"
-                maxLength={6}
-                placeholder="000000"
+                onChange={(event) => { setPin(hosted ? event.target.value : event.target.value.replace(/\D/g, '').slice(0, 6)); pair.reset() }}
+                inputMode={hosted ? undefined : 'numeric'}
+                autoComplete={hosted ? 'current-password' : 'one-time-code'}
+                pattern={hosted ? undefined : '[0-9]{6}'}
+                maxLength={hosted ? 256 : 6}
+                placeholder={hosted ? 'Password' : '000000'}
                 required
                 disabled={pair.isPending}
                 autoFocus
@@ -102,11 +115,11 @@ function Pairing({ setup, loading, error, onRetry, sessionNotice }: {
                 aria-describedby={pair.isError ? 'pair-error' : undefined}
               />
               {pair.isError && <p id="pair-error" className="inline-error" role="alert">{errorMessage(pair.error)}</p>}
-              <Button type="submit" className="pair-submit" disabled={pin.length !== 6 || pair.isPending}>{pair.isPending ? <LoaderCircle className="spin" /> : <Link2 />}{pair.isPending ? 'Pairing your controller…' : 'Unlock station'}<ArrowRight /></Button>
-              <p className="pairing-help"><Smartphone size={17} /> Pair this browser once. Your code stays on the Mac.</p>
+              <Button type="submit" className="pair-submit" disabled={(hosted ? !pin : pin.length !== 6) || pair.isPending}>{pair.isPending ? <LoaderCircle className="spin" /> : <Link2 />}{pair.isPending ? 'Unlocking your controller…' : 'Unlock station'}<ArrowRight /></Button>
+              <p className="pairing-help"><Smartphone size={17} /> {hosted ? 'The service sends the password through HTTPS. This browser does not store it.' : 'Pair this browser once. Your code stays on the Mac.'}</p>
             </form>
           )}
-          <div className="access-footer"><span>UHB / LOCAL CONTROL</span><span>AUTHORIZED PERSONNEL ONLY</span></div>
+          <div className="access-footer"><span>UHB / {hosted ? 'HOSTED CONTROL' : 'LOCAL CONTROL'}</span><span>AUTHORIZED PERSONNEL ONLY</span></div>
         </section>
       </main>
       <footer className="pairing-bottom"><span>MADE FOR THE TABLE. NOT THE OVERLORDS.</span><span>UNDERHIVE BROADCAST © 2026</span></footer>
@@ -189,7 +202,7 @@ function EventControls({ state, now, disabled, send }: {
   )
 }
 
-function Station({ onUnpaired }: { onUnpaired: (message: string) => void }) {
+function Station({ hosted, onUnpaired }: { hosted: boolean; onUnpaired: (message: string) => void }) {
   const client = useQueryClient()
   const [connectOpen, setConnectOpen] = useState(false)
   const [preview, setPreview] = useState<Clip | null>(null)
@@ -207,20 +220,24 @@ function Station({ onUnpaired }: { onUnpaired: (message: string) => void }) {
   const now = useStationTime(stateQuery.dataUpdatedAt, state?.server.now ?? 0)
 
   const handleFailure = useCallback((error: unknown) => {
-    const message = errorMessage(error)
+    const message = error instanceof ApiError && error.status === 409
+      ? 'Another controller changed the broadcast. The latest state is now loaded.'
+      : errorMessage(error)
     setActionError(message)
     toast.error(message)
-    if (error instanceof ApiError && error.status === 401) onUnpaired('Your session expired. Enter the code shown on the Mac.')
-  }, [onUnpaired])
+    if (error instanceof ApiError && error.status === 401) {
+      onUnpaired(hosted ? 'Your session expired. Enter the private controller password.' : 'Your session expired. Enter the code shown on the Mac.')
+    }
+  }, [hosted, onUnpaired])
   useEffect(() => {
     if (stateQuery.error instanceof ApiError && stateQuery.error.status === 401) {
-      onUnpaired('Your session expired. Enter the code shown on the Mac.')
+      onUnpaired(hosted ? 'Your session expired. Enter the private controller password.' : 'Your session expired. Enter the code shown on the Mac.')
     }
-  }, [stateQuery.error, onUnpaired])
+  }, [hosted, stateQuery.error, onUnpaired])
   const commandMutation = useMutation({
     mutationFn: async (variables: { command: Command; success?: string }) => {
       await client.cancelQueries({ queryKey: ['station'] })
-      return command(variables.command)
+      return command(variables.command, state?.broadcast.revision ?? 0)
     },
     onSuccess: (data, variables) => {
       client.setQueryData<StationState>(['station'], data)
@@ -232,7 +249,7 @@ function Station({ onUnpaired }: { onUnpaired: (message: string) => void }) {
   })
   const logout = useMutation({
     mutationFn: () => api('/api/logout', { method: 'POST' }),
-    onSuccess: () => onUnpaired('This browser is disconnected. Your station keeps broadcasting.'),
+    onSuccess: () => onUnpaired(hosted ? 'This browser is signed out. The hosted broadcast keeps running.' : 'This browser is disconnected. Your station keeps broadcasting.'),
     onError: handleFailure,
   })
   const send = (value: Command, success?: string) => {
@@ -285,7 +302,7 @@ function Station({ onUnpaired }: { onUnpaired: (message: string) => void }) {
           <a href="#game-events"><Zap size={15} /> Game events</a>
           <a href="#library"><Film size={15} /> Content library</a>
         </nav>
-        <div className="header-actions"><span className={`connection-pill ${receipt.kind}`}><span className={`status-dot ${receipt.kind}`} />{receipt.label}</span><Button variant="outline" onClick={() => setConnectOpen(true)}><Link2 /><span>Connect</span></Button></div>
+        <div className="header-actions"><span className={`connection-pill ${receipt.kind}`}><span className={`status-dot ${receipt.kind}`} />{receipt.label}</span><Button variant="outline" onClick={() => setConnectOpen(true)}><Link2 /><span>{hosted ? 'Badges' : 'Connect'}</span></Button></div>
       </header>
 
       <main>
@@ -293,7 +310,7 @@ function Station({ onUnpaired }: { onUnpaired: (message: string) => void }) {
           <div><span className="eyebrow">YOUR TABLETOP. YOUR AIRWAVES.</span><h1>CONTROL THE <span>SIGNAL.</span></h1><p>A little propaganda. A little chaos. All under your control.</p></div>
           <div className="station-stamp" aria-label="Underhive independent station number 07"><span>INDEPENDENT</span><strong>UHB<span>07</span></strong><span>KEEP IT TRANSMITTING</span></div>
         </section>
-        {stateQuery.isError && <div className="connection-error" role="alert"><WifiOff /><div><strong>Connection to the Mac lost.</strong><p>{errorMessage(stateQuery.error)} Controls are locked until the station responds.</p></div><Button variant="outline" onClick={() => void stateQuery.refetch()}><RefreshCw /> Retry</Button></div>}
+        {stateQuery.isError && <div className="connection-error" role="alert"><WifiOff /><div><strong>{hosted ? 'Connection to the hosted service lost.' : 'Connection to the Mac lost.'}</strong><p>{errorMessage(stateQuery.error)} Controls are locked until the station responds.</p></div><Button variant="outline" onClick={() => void stateQuery.refetch()}><RefreshCw /> Retry</Button></div>}
         {actionError && <div className="action-error" role="alert"><CircleAlert /><span>{actionError}</span><Button variant="ghost" size="icon" aria-label="Dismiss action error" onClick={() => setActionError('')}><X /></Button></div>}
 
         <section className="broadcast-desk" id="broadcast" aria-label="Live broadcast desk">
@@ -340,8 +357,8 @@ function Station({ onUnpaired }: { onUnpaired: (message: string) => void }) {
 
         <div className="programming-layout">
           <section className="library-section" id="library" aria-labelledby="library-heading">
-            <div className="library-heading"><div><span className="eyebrow">FRESH FROM THE LOWER LEVELS</span><h2 id="library-heading">CONTENT LIBRARY<span>{String(library.length).padStart(2, '0')}</span></h2></div><UploadDialog onFailure={handleFailure} /></div>
-            <div className="library-toolbar"><div className="library-filters" aria-label="Filter clips by category">{categories.map((item) => <button type="button" key={item.value} aria-pressed={category === item.value} className={category === item.value ? 'active' : ''} onClick={() => setCategory(item.value)}>{item.label}</button>)}</div><label className="library-search"><Search size={17} /><Input value={search} onChange={(event) => setSearch(event.target.value)} aria-label="Search clips" placeholder="Find a clip…" /></label></div>
+            <div className="library-heading"><div><span className="eyebrow">FRESH FROM THE LOWER LEVELS</span><h2 id="library-heading">CONTENT LIBRARY<span>{String(library.length).padStart(2, '0')}</span></h2></div>{!hosted && <UploadDialog onFailure={handleFailure} />}</div>
+            <div className="library-toolbar"><div className="library-filters" aria-label="Filter clips by category">{categories.filter((item) => !hosted || item.value !== 'custom').map((item) => <button type="button" key={item.value} aria-pressed={category === item.value} className={category === item.value ? 'active' : ''} onClick={() => setCategory(item.value)}>{item.label}</button>)}</div><label className="library-search"><Search size={17} /><Input value={search} onChange={(event) => setSearch(event.target.value)} aria-label="Search clips" placeholder="Find a clip…" /></label></div>
             <div className="clip-grid">
               {filteredLibrary.map((clip) => {
                 const eventClip = clip.category === 'event'
@@ -374,13 +391,15 @@ function Station({ onUnpaired }: { onUnpaired: (message: string) => void }) {
               })}</ol> : <div className="queue-empty"><ListVideo size={28} /><div><strong>Room for more noise.</strong><p>Use <Plus size={12} /> on a clip to line up your next transmission.</p></div></div>}
               <div className="queue-note"><ArrowDown size={14} /><span>Queued clips play after the current clip ends, even with loop on.</span></div>
             </section>
-            <div className="field-note"><RadioTower size={24} /><div><span className="eyebrow">FROM THE FIELD</span><p>Keep the Mac awake, the badge nearby, and the signal a little questionable.</p></div></div>
+            <div className="field-note"><RadioTower size={24} /><div><span className="eyebrow">FROM THE FIELD</span><p>{hosted ? 'Badges receive the current signal through the hosted service.' : 'Keep the Mac awake, the badge nearby, and the signal a little questionable.'}</p></div></div>
           </aside>
         </div>
       </main>
       <footer className="station-footer"><div><RadioTower size={16} /><span>UNDERHIVE BROADCAST</span><i> / </i><span>INDEPENDENT BY DESIGN.</span></div><span>SECTOR 07 <i>●</i> {state.server.width} × {state.server.height} PIXELS OF TROUBLE</span></footer>
       <ClipPreview clip={preview} onClose={() => setPreview(null)} />
-      <ConnectDialog state={state} open={connectOpen} onOpenChange={setConnectOpen} onLogout={() => logout.mutate()} loggingOut={logout.isPending} logoutError={logout.isError ? errorMessage(logout.error) : ''} />
+      {hosted
+        ? <HostedBadgesDialog open={connectOpen} onOpenChange={setConnectOpen} onLogout={() => logout.mutate()} loggingOut={logout.isPending} />
+        : <ConnectDialog state={state} open={connectOpen} onOpenChange={setConnectOpen} onLogout={() => logout.mutate()} loggingOut={logout.isPending} logoutError={logout.isError ? errorMessage(logout.error) : ''} />}
     </div>
   )
 }
@@ -389,14 +408,22 @@ function Controller() {
   const client = useQueryClient()
   const [sessionNotice, setSessionNotice] = useState('')
   const setup = useQuery({ queryKey: ['setup'], queryFn: ({ signal }) => api<Setup>('/api/setup', { signal }), staleTime: 60_000 })
+  useEffect(() => {
+    setCsrfToken(setup.data?.csrfToken)
+  }, [setup.data?.csrfToken])
   const onUnpaired = useCallback((message: string) => {
     setSessionNotice(message)
+    setCsrfToken()
     void client.cancelQueries({ queryKey: ['station'] })
     client.removeQueries({ queryKey: ['station'] })
-    client.setQueryData<Setup>(['setup'], (old) => ({ paired: false, name: old?.name || 'Underhive Broadcast' }))
+    client.setQueryData<Setup>(['setup'], (old) => ({
+      paired: false,
+      name: old?.name || 'Underhive Broadcast',
+      authMode: old?.authMode,
+    }))
   }, [client])
   return <>
-    {setup.data?.paired ? <Station onUnpaired={onUnpaired} /> : <Pairing setup={setup.data} loading={setup.isPending} error={setup.error} onRetry={() => void setup.refetch()} sessionNotice={sessionNotice} />}
+    {setup.data?.paired ? <Station hosted={setup.data.authMode === 'password'} onUnpaired={onUnpaired} /> : <Pairing setup={setup.data} loading={setup.isPending} error={setup.error} onRetry={() => void setup.refetch()} sessionNotice={sessionNotice} />}
     <Toaster position="bottom-center" theme="dark" richColors closeButton toastOptions={{ className: 'station-toast' }} />
   </>
 }

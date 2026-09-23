@@ -89,7 +89,7 @@ function lines(text: string, limit: number) {
   return result
 }
 
-function eventSvg(event: NonNullable<Broadcast['event']>) {
+export function eventSvg(event: NonNullable<Broadcast['event']>) {
   const title = lines(event.title.toUpperCase(), 16).slice(0, 2)
   const detail = lines(event.detail.toUpperCase(), 24).slice(0, 3)
   return Buffer.from(`<svg xmlns="http://www.w3.org/2000/svg" width="160" height="120">
