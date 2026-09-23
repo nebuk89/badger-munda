@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net'
 import { after, before, test } from 'node:test'
 import type { StationState } from '../../shared/types.ts'
 import { createHostedApp } from './app.ts'
+import type { HostedCatalog } from './catalog.ts'
 import { sha256 } from './crypto.ts'
 import { hashPassword } from './password.ts'
 import type { HostedStore } from './store.ts'
@@ -13,6 +14,35 @@ const badgeId = '11111111-1111-4111-8111-111111111111'
 const badgeSecret = 'badge-secret-123456789012345678901234'
 const csrf = 'csrf-token-for-hosted-tests'
 const sessionToken = 'session-token-for-hosted-tests'
+const catalogHash = 'a'.repeat(64)
+const catalog: HostedCatalog = {
+  version: 1,
+  catalogHash,
+  clips: [{
+    id: 'ration-works',
+    title: 'Ration Works',
+    subtitle: 'Test signal',
+    category: 'advert',
+    duration: 8,
+    fps: 8,
+    frameCount: 64,
+    width: 160,
+    height: 120,
+    accent: '#d9b440',
+    posterUrl: 'clips/ration-works/poster.png',
+    videoUrl: 'clips/ration-works/video.mp4',
+    frameIds: Array.from({ length: 64 }, (_, index) => index + 1),
+    framePaths: Array.from(
+      { length: 64 },
+      (_, index) => `clips/ration-works/frames/${String(index).padStart(4, '0')}.ubf`,
+    ),
+    frameHashes: Array.from({ length: 64 }, () => 'b'.repeat(64)),
+    posterPath: 'clips/ration-works/poster.png',
+    posterHash: 'c'.repeat(64),
+    videoPath: 'clips/ration-works/video.mp4',
+    videoHash: 'd'.repeat(64),
+  }],
+}
 
 function stationState(revision = 1): StationState {
   return {
@@ -65,6 +95,8 @@ class FakeStore {
   revokeAllCount = 0
   auditEvents: string[] = []
   auditDetails: Array<{ eventType: string; detail: Record<string, unknown>; badgeId?: string }> = []
+  deviceLimitAllowed = true
+  syncReports: unknown[] = []
 
   async session(token?: string) {
     return token === sessionToken
@@ -151,6 +183,34 @@ class FakeStore {
     if (id !== badgeId || this.badgeRevoked) return undefined
     return { badgeId, badgeSecret: `${badgeSecret}-rotated` }
   }
+
+  async authenticateBadge(id: string, secret: string) {
+    if (id !== badgeId || secret !== badgeSecret || this.badgeRevoked) return undefined
+    return { id: badgeId, claimedAt: this.claimed ? Date.now() : null }
+  }
+
+  async consumeDeviceSyncLimit() {
+    return this.deviceLimitAllowed
+      ? { allowed: true }
+      : { allowed: false, retryAfter: 30 }
+  }
+
+  async recordDeviceSync(_id: string, report: unknown) {
+    this.syncReports.push(report)
+  }
+
+  async issueBadgeClaimCode() {
+    return { code: '123456', expiresAt: Date.now() + 10 * 60_000 }
+  }
+
+  async station() {
+    return {
+      revision: this.revision,
+      commandSeq: 4,
+      playbackGeneration: 3,
+      broadcast: stationState(this.revision).broadcast,
+    }
+  }
 }
 
 const store = new FakeStore()
@@ -164,8 +224,11 @@ before(async () => {
   process.env.IP_RATE_LIMIT_HMAC_KEY = 'rate-limit-key-for-tests'
   process.env.CLAIM_CODE_HMAC_KEY = 'claim-key-for-tests'
   process.env.DEVICE_SECRET_HMAC_KEY = 'device-key-for-tests'
+  process.env.CONTENT_CATALOG_URL = `https://blob.example/content/v1/${catalogHash}/catalog.json`
+  process.env.CONTENT_BLOB_BASE_URL = 'https://blob.example/'
 
-  const app = createHostedApp({
+  const app = await createHostedApp({
+    catalog,
     store: store as unknown as HostedStore,
     ready: async () => {},
   })
@@ -371,4 +434,111 @@ test('badge administration creates, lists, claims, rotates, and revokes credenti
   ])
   assert.equal(JSON.stringify(store.auditDetails).includes(badgeSecret), false)
   assert.equal(JSON.stringify(store.auditDetails).includes('123456'), false)
+})
+
+test('device sync authenticates, issues claims, records receipts, and returns direct Blob playback', async () => {
+  store.claimed = false
+  store.badgeRevoked = false
+  store.deviceLimitAllowed = true
+  store.syncReports = []
+  const headers = {
+    'Content-Type': 'application/json',
+    Authorization: `Badge ${badgeId}.${badgeSecret}`,
+  }
+  const report = {
+    protocol: 2,
+    bootId: 'boot-id-1234',
+    firmwareVersion: '2.0.0',
+    knownStationRevision: 1,
+    fps: 7.5,
+    errorCode: 'frame_late',
+    lastReceipt: {
+      stationRevision: 1,
+      commandSeq: 2,
+      playbackGeneration: 3,
+      frameId: 4,
+    },
+  }
+  const unclaimed = await fetch(`${baseUrl}/api/device/sync`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(report),
+  })
+  assert.equal(unclaimed.status, 200)
+  const claim = await unclaimed.json() as {
+    mode: string
+    claimCode: string
+    claimExpiresAtMs: number
+  }
+  assert.equal(claim.mode, 'claim')
+  assert.equal(claim.claimCode, '123456')
+  assert.ok(claim.claimExpiresAtMs > Date.now())
+  assert.deepEqual(store.syncReports.at(-1), report)
+  assert.equal(JSON.stringify(claim).includes(badgeSecret), false)
+
+  store.claimed = true
+  const claimed = await fetch(`${baseUrl}/api/device/sync`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(report),
+  })
+  assert.equal(claimed.status, 200)
+  const playback = await claimed.json() as {
+    mode: string
+    stationRevision: number
+    commandSeq: number
+    playbackGeneration: number
+    contentVersion: string
+    clip: { frameUrlTemplate: string; fps: number; frameCount: number }
+  }
+  assert.equal(playback.mode, 'play')
+  assert.equal(playback.stationRevision, store.revision)
+  assert.equal(playback.commandSeq, 4)
+  assert.equal(playback.playbackGeneration, 3)
+  assert.equal(playback.contentVersion, catalogHash)
+  assert.equal(playback.clip.fps, 8)
+  assert.equal(playback.clip.frameCount, 64)
+  assert.equal(
+    playback.clip.frameUrlTemplate,
+    `https://blob.example/content/v1/${catalogHash}/clips/ration-works/frames/{frame}.ubf`,
+  )
+})
+
+test('device sync rejects invalid, revoked, and rate-limited credentials', async () => {
+  const report = JSON.stringify({
+    protocol: 2,
+    bootId: 'boot-id-1234',
+    firmwareVersion: '2.0.0',
+  })
+  const invalid = await fetch(`${baseUrl}/api/device/sync`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: 'Badge invalid' },
+    body: report,
+  })
+  assert.equal(invalid.status, 401)
+
+  store.badgeRevoked = true
+  const revoked = await fetch(`${baseUrl}/api/device/sync`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Badge ${badgeId}.${badgeSecret}`,
+    },
+    body: report,
+  })
+  assert.equal(revoked.status, 401)
+
+  store.badgeRevoked = false
+  store.deviceLimitAllowed = false
+  const limited = await fetch(`${baseUrl}/api/device/sync`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Badge ${badgeId}.${badgeSecret}`,
+    },
+    body: report,
+  })
+  assert.equal(limited.status, 429)
+  assert.equal(limited.headers.get('retry-after'), '30')
+  store.deviceLimitAllowed = true
 })

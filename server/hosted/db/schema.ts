@@ -1,3 +1,4 @@
+import { sql } from 'drizzle-orm'
 import {
   bigint,
   boolean,
@@ -85,6 +86,7 @@ export const badgeCredentials = pgTable('badge_credentials', {
   secretHmac: text('secret_hmac').notNull().unique(),
   validFrom: timestamp('valid_from', { withTimezone: true }).notNull(),
   validUntil: timestamp('valid_until', { withTimezone: true }),
+  firstUsedAt: timestamp('first_used_at', { withTimezone: true }),
   revokedAt: timestamp('revoked_at', { withTimezone: true }),
 }, (table) => [
   index('badge_credentials_badge').on(table.badgeId),
@@ -101,6 +103,43 @@ export const badgeClaims = pgTable('badge_claims', {
   index('badge_claims_code_expiry').on(table.codeHmac, table.expiresAt),
   index('badge_claims_badge').on(table.badgeId),
 ])
+
+export const badgePresence = pgTable('badge_presence', {
+  badgeId: text('badge_id').primaryKey().references(() => badges.id, { onDelete: 'cascade' }),
+  bootId: text('boot_id').notNull(),
+  firmwareVersion: text('firmware_version').notNull(),
+  lastSeenAt: timestamp('last_seen_at', { withTimezone: true }).notNull(),
+  knownStationRevision: bigint('known_station_revision', { mode: 'number' }),
+  fps: doublePrecision('fps'),
+  lastErrorCode: text('last_error_code'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
+})
+
+export const badgeReceipts = pgTable('badge_receipts', {
+  badgeId: text('badge_id').primaryKey().references(() => badges.id, { onDelete: 'cascade' }),
+  stationRevision: bigint('station_revision', { mode: 'number' }).notNull(),
+  commandSeq: bigint('command_seq', { mode: 'number' }).notNull(),
+  playbackGeneration: bigint('playback_generation', { mode: 'number' }).notNull(),
+  frameId: bigint('frame_id', { mode: 'number' }).notNull(),
+  receivedAt: timestamp('received_at', { withTimezone: true }).notNull(),
+})
+
+export const contentVersions = pgTable('content_versions', {
+  catalogHash: text('catalog_hash').primaryKey(),
+  catalogUrl: text('catalog_url').notNull().unique(),
+  blobBaseUrl: text('blob_base_url').notNull(),
+  active: boolean('active').notNull().default(false),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+}, (table) => [
+  uniqueIndex('content_versions_one_active').on(table.active).where(sql`${table.active}`),
+])
+
+export const deviceSyncLimits = pgTable('device_sync_limits', {
+  badgeId: text('badge_id').primaryKey().references(() => badges.id, { onDelete: 'cascade' }),
+  windowStartedAt: timestamp('window_started_at', { withTimezone: true }).notNull(),
+  requestCount: integer('request_count').notNull(),
+  blockedUntil: timestamp('blocked_until', { withTimezone: true }),
+})
 
 export const auditEvents = pgTable('audit_events', {
   id: text('id').primaryKey(),

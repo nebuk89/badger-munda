@@ -1,7 +1,6 @@
-import { randomInt, randomUUID } from 'node:crypto'
+import { randomUUID } from 'node:crypto'
 import type { PoolClient } from 'pg'
-import type { Broadcast, Clip, Command, StationState } from '../../shared/types.ts'
-import { gameEvents } from '../../shared/game-events.ts'
+import type { BadgeDevice, Broadcast, Clip, Command, StationState } from '../../shared/types.ts'
 import {
   applyEngineCommand,
   broadcastFromEngine,
@@ -9,36 +8,16 @@ import {
   materializeEngineState,
   type EngineState,
 } from '../station-engine.ts'
+import { controllerLibrary, type HostedCatalog } from './catalog.ts'
 import { keyedHash, randomToken, sha256 } from './crypto.ts'
+import {
+  DeviceSyncStore,
+  type DeviceSyncReport,
+} from './device-store.ts'
 import { hostedConfig } from './env.ts'
 import { hostedPool, transaction } from './db/client.ts'
 
 const STATION_ID = 'default'
-const POSTER = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="160" height="120"%3E%3Crect width="160" height="120" fill="%231b2428"/%3E%3Cpath d="M20 60h120M80 20v80" stroke="%23d9b440" stroke-width="3"/%3E%3C/svg%3E'
-
-function clip(id: string, title: string, subtitle: string, category: Clip['category'], accent: string): Clip {
-  return {
-    id,
-    title,
-    subtitle,
-    category,
-    duration: 8,
-    fps: 8,
-    frameCount: 64,
-    width: 160,
-    height: 120,
-    accent,
-    posterUrl: POSTER,
-    videoUrl: '',
-  }
-}
-
-const HOSTED_LIBRARY: Clip[] = [
-  clip('ration-works', 'Ration Works', 'New flavour. Same nutrients.', 'advert', '#d9b440'),
-  clip('curfew-signal', 'Curfew Signal', 'Sector 07. Remain productive.', 'notice', '#c64435'),
-  clip('sump-tavern', 'The Sump', 'Filtered twice. Questions cost extra.', 'advert', '#4eb39a'),
-  ...gameEvents.map((event) => clip(event.clipId, event.title, event.detail, 'event', '#d9b440')),
-]
 
 interface StationRow {
   revision: string
@@ -87,6 +66,15 @@ export interface HostedBadge {
   revokedAt: number | null
   createdAt: number
   updatedAt: number
+  online: boolean
+  lastSeenAt: number | null
+  firmwareVersion: string | null
+  fps: number
+  lastStationRevision: number | null
+  lastCommandSeq: number | null
+  lastPlaybackGeneration: number | null
+  lastAssetFrameId: number | null
+  lastErrorCode: string | null
 }
 
 function engineFromRow(row: StationRow): EngineState {
@@ -131,8 +119,8 @@ async function saveEngine(
   )
 }
 
-async function initializeStation(client: PoolClient, now: number) {
-  const initial = createEngineState(HOSTED_LIBRARY, now)
+async function initializeStation(client: PoolClient, library: Clip[], now: number) {
+  const initial = createEngineState(library, now)
   await client.query(
     `INSERT INTO stations (id, name, revision, next_command_seq, created_at, updated_at)
      VALUES ($1, 'Underhive Broadcast', $2, 1, to_timestamp($3 / 1000.0), to_timestamp($3 / 1000.0))
@@ -150,8 +138,8 @@ async function initializeStation(client: PoolClient, now: number) {
   )
 }
 
-async function lockedStation(client: PoolClient, now: number) {
-  await initializeStation(client, now)
+async function lockedStation(client: PoolClient, library: Clip[], now: number) {
+  await initializeStation(client, library, now)
   const result = await client.query<StationRow>(
     `SELECT s.revision, s.next_command_seq, b.clip_id, b.paused, b.loop, b.started_at,
             b.anchor_time, b.position, b.round, b.event_json, b.queue_json,
@@ -165,7 +153,7 @@ async function lockedStation(client: PoolClient, now: number) {
   if (!result.rows[0]) throw new Error('The shared station is unavailable.')
   const row = result.rows[0]
   const input = engineFromRow(row)
-  const state = materializeEngineState(input, HOSTED_LIBRARY, now)
+  const state = materializeEngineState(input, library, now)
   let generation = Number(row.playback_generation)
   if (state.revision !== input.revision) {
     generation++
@@ -179,8 +167,17 @@ async function lockedStation(client: PoolClient, now: number) {
 }
 
 export class HostedStore {
+  private readonly deviceSync: DeviceSyncStore
+
+  constructor(
+    private readonly catalog: HostedCatalog,
+    deviceSync = new DeviceSyncStore(),
+  ) {
+    this.deviceSync = deviceSync
+  }
+
   get library() {
-    return HOSTED_LIBRARY
+    return controllerLibrary(this.catalog)
   }
 
   async createSession(now = Date.now()) {
@@ -303,7 +300,7 @@ export class HostedStore {
 
   async station(now = Date.now()): Promise<HostedSnapshot> {
     return transaction(async (client) => {
-      const { state, generation, nextCommandSeq } = await lockedStation(client, now)
+      const { state, generation, nextCommandSeq } = await lockedStation(client, this.library, now)
       return {
         broadcast: broadcastFromEngine(state),
         revision: state.revision,
@@ -316,7 +313,7 @@ export class HostedStore {
   async command(command: Command, requestId: string, expectedRevision: number, now = Date.now()) {
     const fingerprint = JSON.stringify(command)
     return transaction(async (client) => {
-      const current = await lockedStation(client, now)
+      const current = await lockedStation(client, this.library, now)
       const existing = await client.query<{ fingerprint: string; response_json: HostedSnapshot }>(
         'SELECT fingerprint, response_json FROM commands WHERE station_id = $1 AND request_id = $2',
         [STATION_ID, requestId],
@@ -342,7 +339,7 @@ export class HostedStore {
         })
         throw conflict
       }
-      const next = applyEngineCommand(current.state, HOSTED_LIBRARY, command, now)
+      const next = applyEngineCommand(current.state, this.library, command, now)
       const commandSeq = current.nextCommandSeq
       const generation = current.generation + 1
       const response: HostedSnapshot = {
@@ -364,11 +361,25 @@ export class HostedStore {
     })
   }
 
-  async badges(): Promise<HostedBadge[]> {
-    const result = await hostedPool().query<BadgeRow>(
-      `SELECT id, label, claimed_at, revoked_at, created_at, updated_at
-         FROM badges
-        ORDER BY created_at, id`,
+  async badges(now = Date.now()): Promise<HostedBadge[]> {
+    const result = await hostedPool().query<BadgeRow & {
+      last_seen_at: Date | null
+      firmware_version: string | null
+      known_station_revision: string | null
+      fps: number | null
+      station_revision: string | null
+      command_seq: string | null
+      playback_generation: string | null
+      frame_id: string | null
+      last_error_code: string | null
+    }>(
+      `SELECT b.id, b.label, b.claimed_at, b.revoked_at, b.created_at, b.updated_at,
+              p.last_seen_at, p.firmware_version, p.known_station_revision, p.fps, p.last_error_code,
+              r.station_revision, r.command_seq, r.playback_generation, r.frame_id
+         FROM badges b
+         LEFT JOIN badge_presence p ON p.badge_id = b.id
+         LEFT JOIN badge_receipts r ON r.badge_id = b.id
+        ORDER BY b.created_at, b.id`,
     )
     return result.rows.map((row) => ({
       id: row.id,
@@ -379,6 +390,17 @@ export class HostedStore {
       revokedAt: row.revoked_at?.getTime() ?? null,
       createdAt: row.created_at.getTime(),
       updatedAt: row.updated_at.getTime(),
+      online: Boolean(row.last_seen_at && now - row.last_seen_at.getTime() < 15_000),
+      lastSeenAt: row.last_seen_at?.getTime() ?? null,
+      firmwareVersion: row.firmware_version,
+      fps: row.fps ?? 0,
+      lastStationRevision: row.station_revision === null
+        ? (row.known_station_revision === null ? null : Number(row.known_station_revision))
+        : Number(row.station_revision),
+      lastCommandSeq: row.command_seq === null ? null : Number(row.command_seq),
+      lastPlaybackGeneration: row.playback_generation === null ? null : Number(row.playback_generation),
+      lastAssetFrameId: row.frame_id === null ? null : Number(row.frame_id),
+      lastErrorCode: row.last_error_code,
     }))
   }
 
@@ -398,42 +420,6 @@ export class HostedStore {
       )
     })
     return { badgeId, badgeSecret }
-  }
-
-  async createClaimCode(badgeId: string, now = Date.now()) {
-    return transaction(async (client) => {
-      const badge = await client.query<{ claimed_at: Date | null }>(
-        'SELECT claimed_at FROM badges WHERE id = $1 AND revoked_at IS NULL FOR UPDATE',
-        [badgeId],
-      )
-      if (!badge.rows[0] || badge.rows[0].claimed_at) return undefined
-      await client.query(
-        `UPDATE badge_claims
-            SET consumed_at = to_timestamp($2 / 1000.0)
-          WHERE badge_id = $1 AND consumed_at IS NULL`,
-        [badgeId, now],
-      )
-      await client.query('LOCK TABLE badge_claims IN SHARE ROW EXCLUSIVE MODE')
-      for (let attempt = 0; attempt < 20; attempt++) {
-        const code = randomInt(0, 1_000_000).toString().padStart(6, '0')
-        const codeHmac = keyedHash(hostedConfig().claimKey, code)
-        const collision = await client.query(
-          `SELECT 1 FROM badge_claims
-            WHERE code_hmac = $1 AND consumed_at IS NULL
-              AND expires_at > to_timestamp($2 / 1000.0)`,
-          [codeHmac, now],
-        )
-        if (collision.rowCount) continue
-        const expiresAt = now + 10 * 60_000
-        await client.query(
-          `INSERT INTO badge_claims (id, badge_id, code_hmac, expires_at, created_at)
-           VALUES ($1, $2, $3, to_timestamp($4 / 1000.0), to_timestamp($5 / 1000.0))`,
-          [randomUUID(), badgeId, codeHmac, expiresAt, now],
-        )
-        return { code, expiresAt }
-      }
-      throw new Error('A unique claim code is unavailable.')
-    })
   }
 
   async claimBadge(code: string, now = Date.now()) {
@@ -526,12 +512,45 @@ export class HostedStore {
     })
   }
 
+  authenticateBadge(badgeId: string, badgeSecret: string, now = Date.now()) {
+    return this.deviceSync.authenticate(badgeId, badgeSecret, now)
+  }
+
+  issueBadgeClaimCode(badgeId: string, now = Date.now()) {
+    return this.deviceSync.issueClaimCode(badgeId, now)
+  }
+
+  recordDeviceSync(badgeId: string, report: DeviceSyncReport, now = Date.now()) {
+    return this.deviceSync.recordSync(badgeId, report, now)
+  }
+
+  consumeDeviceSyncLimit(
+    badgeId: string,
+    maximum: number,
+    windowMs: number,
+    now = Date.now(),
+  ) {
+    return this.deviceSync.consumeLimit(badgeId, maximum, windowMs, now)
+  }
+
   async stationState(now = Date.now()): Promise<StationState> {
-    const station = await this.station(now)
+    const [station, badges] = await Promise.all([this.station(now), this.badges(now)])
+    const devices: BadgeDevice[] = badges
+      .filter((badge) => badge.claimed && !badge.revoked)
+      .map((badge) => ({
+        id: badge.id,
+        lastSeen: badge.lastSeenAt ?? 0,
+        lastFrameAt: badge.lastSeenAt,
+        frameId: badge.lastAssetFrameId,
+        fps: badge.fps,
+        online: badge.online,
+        awaitingPairing: false,
+        format: 'png',
+      }))
     return {
       library: this.library,
       broadcast: station.broadcast,
-      devices: [],
+      devices,
       server: {
         name: 'Underhive Broadcast',
         version: '0.2.0',

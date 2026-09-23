@@ -1,6 +1,11 @@
 import express, { type ErrorRequestHandler, type Request, type RequestHandler } from 'express'
 import { z } from 'zod'
 import { commandSchema } from '../station.ts'
+import {
+  frameUrlTemplate,
+  loadHostedCatalog,
+  type HostedCatalog,
+} from './catalog.ts'
 import { equalText, sha256 } from './crypto.ts'
 import { hostedConfig } from './env.ts'
 import { verifyPassword } from './password.ts'
@@ -28,9 +33,36 @@ function asyncRoute(handler: RequestHandler): RequestHandler {
   return (req, res, next) => { Promise.resolve(handler(req, res, next)).catch(next) }
 }
 
-export function createHostedApp(options: { store?: HostedStore; ready?: () => Promise<void> } = {}) {
+export function badgeAuthorization(value: string | undefined) {
+  const match = /^Badge ([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.([A-Za-z0-9_-]{20,128})$/i.exec(value ?? '')
+  return match ? { badgeId: match[1].toLowerCase(), badgeSecret: match[2] } : undefined
+}
+
+const receiptSchema = z.object({
+  stationRevision: z.number().int().nonnegative(),
+  commandSeq: z.number().int().nonnegative(),
+  playbackGeneration: z.number().int().nonnegative(),
+  frameId: z.number().int().positive(),
+})
+
+export const deviceSyncSchema = z.object({
+  protocol: z.literal(2),
+  bootId: z.string().regex(/^[A-Za-z0-9_-]{8,64}$/),
+  firmwareVersion: z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._+/-]{0,79}$/),
+  knownStationRevision: z.number().int().nonnegative().optional(),
+  lastReceipt: receiptSchema.optional(),
+  fps: z.number().min(0).max(120).optional(),
+  errorCode: z.string().regex(/^[a-z0-9][a-z0-9._-]{0,79}$/).nullable().optional(),
+})
+
+export async function createHostedApp(options: {
+  catalog?: HostedCatalog
+  store?: HostedStore
+  ready?: () => Promise<void>
+} = {}) {
   const config = hostedConfig()
-  const store = options.store ?? new HostedStore()
+  const catalog = options.catalog ?? await loadHostedCatalog(config)
+  const store = options.store ?? new HostedStore(catalog)
   const app = express()
 
   app.disable('x-powered-by')
@@ -39,7 +71,11 @@ export function createHostedApp(options: { store?: HostedStore; ready?: () => Pr
     res.setHeader('Referrer-Policy', 'same-origin')
     res.setHeader('X-Frame-Options', 'DENY')
     res.setHeader('Cache-Control', 'no-store')
-    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && req.headers.origin !== config.appOrigin) {
+    if (
+      !['GET', 'HEAD', 'OPTIONS'].includes(req.method)
+      && req.path !== '/api/device/sync'
+      && req.headers.origin !== config.appOrigin
+    ) {
       res.status(403).json({ error: 'This origin cannot control the station.' })
       return
     }
@@ -224,6 +260,77 @@ export function createHostedApp(options: { store?: HostedStore; ready?: () => Pr
     }
     await store.audit('badge.secret_rotated', {}, sessions.get(req)!.id, badgeId)
     res.json({ ...badge, serviceUrl: config.appOrigin })
+  }))
+
+  app.post('/api/device/sync', asyncRoute(async (req, res) => {
+    const authorization = badgeAuthorization(req.get('Authorization'))
+    if (!authorization) {
+      res.status(401).json({ error: 'Badge credentials are invalid.' })
+      return
+    }
+    const badge = await store.authenticateBadge(
+      authorization.badgeId,
+      authorization.badgeSecret,
+    )
+    if (!badge) {
+      res.status(401).json({ error: 'Badge credentials are invalid.' })
+      return
+    }
+    const limit = await store.consumeDeviceSyncLimit(badge.id, 180, 2 * 60_000)
+    if (!limit.allowed) {
+      res.setHeader('Retry-After', limit.retryAfter ?? 1)
+      res.status(429).json({ error: 'Too many device sync requests. Try again later.' })
+      return
+    }
+    const report = deviceSyncSchema.parse(req.body)
+    const now = Date.now()
+    await store.recordDeviceSync(badge.id, report, now)
+    if (!badge.claimedAt) {
+      const claim = await store.issueBadgeClaimCode(badge.id, now)
+      if (!claim) {
+        res.status(409).json({ error: 'This badge cannot start a claim.' })
+        return
+      }
+      res.json({
+        protocol: 2,
+        mode: 'claim',
+        serverTimeMs: now,
+        syncAfterMs: 3000,
+        claimCode: claim.code,
+        claimExpiresAtMs: claim.expiresAt,
+      })
+      return
+    }
+    const station = await store.station(now)
+    const event = station.broadcast.event?.clipId ? station.broadcast.event : undefined
+    const clipId = event?.clipId ?? station.broadcast.clipId
+    const clip = catalog.clips.find((entry) => entry.id === clipId)
+    if (!clip) throw new Error('The current hosted clip is unavailable.')
+    const positionMs = event
+      ? Math.max(0, now - event.startedAt)
+      : Math.max(0, Math.floor(station.broadcast.position * 1000))
+    const paused = station.broadcast.paused && !event
+    res.json({
+      protocol: 2,
+      mode: 'play',
+      serverTimeMs: now,
+      syncAfterMs: paused ? 5000 : 1000,
+      stationRevision: station.revision,
+      commandSeq: station.commandSeq,
+      playbackGeneration: station.playbackGeneration,
+      contentVersion: catalog.catalogHash,
+      paused,
+      clip: {
+        id: clip.id,
+        startedAtMs: now - positionMs,
+        positionMs,
+        durationMs: Math.round(clip.duration * 1000),
+        fps: clip.fps,
+        frameCount: clip.frameCount,
+        frameNumberWidth: 4,
+        frameUrlTemplate: frameUrlTemplate(catalog, clip.id, config),
+      },
+    })
   }))
 
   app.get('/api/health/live', (_req, res) => res.json({ ok: true }))
