@@ -10,5 +10,7 @@ export function hostedConfig() {
     adminPasswordHash: requiredEnv('ADMIN_PASSWORD_HASH'),
     sessionPepper: requiredEnv('SESSION_TOKEN_PEPPER'),
     rateLimitKey: requiredEnv('IP_RATE_LIMIT_HMAC_KEY'),
+    claimKey: requiredEnv('CLAIM_CODE_HMAC_KEY'),
+    deviceKey: requiredEnv('DEVICE_SECRET_HMAC_KEY'),
   }
 }

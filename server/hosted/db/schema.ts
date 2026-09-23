@@ -2,6 +2,7 @@ import {
   bigint,
   boolean,
   doublePrecision,
+  index,
   integer,
   jsonb,
   pgTable,
@@ -69,9 +70,42 @@ export const commands = pgTable('commands', {
   uniqueIndex('commands_station_sequence').on(table.stationId, table.commandSeq),
 ])
 
+export const badges = pgTable('badges', {
+  id: text('id').primaryKey(),
+  label: text('label').notNull(),
+  claimedAt: timestamp('claimed_at', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull(),
+})
+
+export const badgeCredentials = pgTable('badge_credentials', {
+  id: text('id').primaryKey(),
+  badgeId: text('badge_id').notNull().references(() => badges.id, { onDelete: 'cascade' }),
+  secretHmac: text('secret_hmac').notNull().unique(),
+  validFrom: timestamp('valid_from', { withTimezone: true }).notNull(),
+  validUntil: timestamp('valid_until', { withTimezone: true }),
+  revokedAt: timestamp('revoked_at', { withTimezone: true }),
+}, (table) => [
+  index('badge_credentials_badge').on(table.badgeId),
+])
+
+export const badgeClaims = pgTable('badge_claims', {
+  id: text('id').primaryKey(),
+  badgeId: text('badge_id').notNull().references(() => badges.id, { onDelete: 'cascade' }),
+  codeHmac: text('code_hmac').notNull(),
+  expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  consumedAt: timestamp('consumed_at', { withTimezone: true }),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+}, (table) => [
+  index('badge_claims_code_expiry').on(table.codeHmac, table.expiresAt),
+  index('badge_claims_badge').on(table.badgeId),
+])
+
 export const auditEvents = pgTable('audit_events', {
   id: text('id').primaryKey(),
   eventType: text('event_type').notNull(),
+  badgeId: text('badge_id').references(() => badges.id, { onDelete: 'set null' }),
   sessionId: text('session_id'),
   detailJson: jsonb('detail_json').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull(),

@@ -40,10 +40,19 @@ const initialState: StationState = {
   },
 }
 
-test('hosted controller supports administrator login, station control, and session revocation', async ({ page }, info) => {
+test('hosted controller supports station control and badge administration', async ({ page }, info) => {
   let paired = false
   let revision = initialState.broadcast.revision
-  let revokedAll = false
+  let badges = [{
+    id: '11111111-1111-4111-8111-111111111111',
+    label: 'South tunnel',
+    claimed: false,
+    revoked: false,
+    claimedAt: null,
+    revokedAt: null,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  }]
   const hostedState = () => ({
     ...initialState,
     broadcast: { ...initialState.broadcast, revision },
@@ -71,10 +80,55 @@ test('hosted controller supports administrator login, station control, and sessi
     revision++
     await route.fulfill({ json: hostedState() })
   })
-  await page.route('**/api/session/revoke-all', async (route) => {
+  await page.route('**/api/badges', async (route) => {
+    if (route.request().method() === 'GET') {
+      await route.fulfill({ json: { badges } })
+      return
+    }
     expect(route.request().headers()['x-csrf-token']).toBe('hosted-csrf-token')
-    revokedAll = true
-    paired = false
+    const body = route.request().postDataJSON() as { label: string }
+    badges = [...badges, {
+      id: '22222222-2222-4222-8222-222222222222',
+      label: body.label,
+      claimed: false,
+      revoked: false,
+      claimedAt: null,
+      revokedAt: null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }]
+    await route.fulfill({
+      status: 201,
+      json: {
+        badgeId: '22222222-2222-4222-8222-222222222222',
+        badgeSecret: 'one-time-device-secret',
+        serviceUrl: 'https://underhive.example',
+      },
+    })
+  })
+  await page.route('**/api/badges/claim', async (route) => {
+    expect(route.request().headers()['x-csrf-token']).toBe('hosted-csrf-token')
+    expect(route.request().postDataJSON()).toEqual({ code: '123456' })
+    badges = badges.map((badge) => badge.id === badges[0].id
+      ? { ...badge, claimed: true, claimedAt: Date.now(), updatedAt: Date.now() }
+      : badge)
+    await route.fulfill({ status: 201, json: { badgeId: badges[0].id } })
+  })
+  await page.route('**/api/badges/*/rotate-secret', async (route) => {
+    expect(route.request().headers()['x-csrf-token']).toBe('hosted-csrf-token')
+    await route.fulfill({
+      json: {
+        badgeId: badges[0].id,
+        badgeSecret: 'rotated-device-secret',
+        serviceUrl: 'https://underhive.example',
+      },
+    })
+  })
+  await page.route('**/api/badges/*/revoke', async (route) => {
+    expect(route.request().headers()['x-csrf-token']).toBe('hosted-csrf-token')
+    badges = badges.map((badge) => badge.id === badges[0].id
+      ? { ...badge, revoked: true, revokedAt: Date.now(), updatedAt: Date.now() }
+      : badge)
     await route.fulfill({ status: 204 })
   })
 
@@ -89,12 +143,29 @@ test('hosted controller supports administrator login, station control, and sessi
   await page.getByRole('button', { name: 'Pause broadcast' }).click()
   await expect.poll(() => revision).toBe(2)
 
-  await page.getByRole('button', { name: 'Session' }).click()
+  await page.getByRole('button', { name: 'Badges' }).click()
   const dialog = page.getByRole('dialog')
-  await expect(dialog.getByRole('heading', { name: 'CONTROL ACCESS.' })).toBeVisible()
-  await dialog.getByRole('button', { name: 'Revoke all sessions' }).click()
-  await expect.poll(() => revokedAll).toBe(true)
-  await expect(page.getByLabel('Controller password')).toBeVisible()
+  await expect(dialog.getByRole('heading', { name: 'BADGES ON THE SIGNAL.' })).toBeVisible()
+  await dialog.getByLabel('New badge label').fill('North gate')
+  await dialog.getByRole('button', { name: 'Create' }).click()
+  await expect(dialog.getByText('Save this secret now.')).toBeVisible()
+  await expect(dialog.getByLabel('Badge secret')).toHaveValue('one-time-device-secret')
+  await expect(dialog.getByLabel('Badge ID')).toHaveValue('22222222-2222-4222-8222-222222222222')
+  await dialog.getByRole('button', { name: 'I saved it' }).click()
+
+  await dialog.getByRole('button', { name: 'Rotate secret for South tunnel' }).click()
+  await expect(dialog.getByLabel('Badge secret')).toHaveValue('rotated-device-secret')
+  await expect(dialog.getByText(/old secret expires within 24 hours/i)).toBeVisible()
+  await dialog.getByRole('button', { name: 'I saved it' }).click()
+
+  await dialog.getByLabel('Claim code from badge').fill('123456')
+  await dialog.getByRole('button', { name: 'Claim' }).click()
+  await expect(dialog.getByText('Claimed', { exact: true })).toBeVisible()
+
+  page.once('dialog', (confirmation) => confirmation.accept())
+  await dialog.getByRole('button', { name: 'Revoke South tunnel' }).click()
+  await expect(dialog.getByText('Revoked', { exact: true })).toBeVisible()
+
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBeTruthy()
   await page.screenshot({ path: info.outputPath('hosted-controller.png'), fullPage: true })
 })

@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { randomInt, randomUUID } from 'node:crypto'
 import type { PoolClient } from 'pg'
 import type { Broadcast, Clip, Command, StationState } from '../../shared/types.ts'
 import { gameEvents } from '../../shared/game-events.ts'
@@ -62,11 +62,31 @@ interface SessionRow {
   absolute_expires_at: Date
 }
 
+interface BadgeRow {
+  id: string
+  label: string
+  claimed_at: Date | null
+  revoked_at: Date | null
+  created_at: Date
+  updated_at: Date
+}
+
 export interface HostedSnapshot {
   broadcast: Broadcast
   revision: number
   commandSeq: number
   playbackGeneration: number
+}
+
+export interface HostedBadge {
+  id: string
+  label: string
+  claimed: boolean
+  revoked: boolean
+  claimedAt: number | null
+  revokedAt: number | null
+  createdAt: number
+  updatedAt: number
 }
 
 function engineFromRow(row: StationRow): EngineState {
@@ -267,11 +287,17 @@ export class HostedStore {
     await hostedPool().query('DELETE FROM auth_rate_limits WHERE scope = $1 AND subject_hash = $2', [scope, subjectHash])
   }
 
-  async audit(eventType: string, detail: Record<string, unknown>, sessionId?: string, now = Date.now()) {
+  async audit(
+    eventType: string,
+    detail: Record<string, unknown>,
+    sessionId?: string,
+    badgeId?: string,
+    now = Date.now(),
+  ) {
     await hostedPool().query(
-      `INSERT INTO audit_events (id, event_type, session_id, detail_json, created_at)
-       VALUES ($1, $2, $3, $4::jsonb, to_timestamp($5 / 1000.0))`,
-      [randomUUID(), eventType, sessionId ?? null, JSON.stringify(detail), now],
+      `INSERT INTO audit_events (id, event_type, badge_id, session_id, detail_json, created_at)
+       VALUES ($1, $2, $3, $4, $5::jsonb, to_timestamp($6 / 1000.0))`,
+      [randomUUID(), eventType, badgeId ?? null, sessionId ?? null, JSON.stringify(detail), now],
     )
   }
 
@@ -335,6 +361,168 @@ export class HostedStore {
         [STATION_ID, commandSeq, requestId, fingerprint, command, next.revision, response, now],
       )
       return response
+    })
+  }
+
+  async badges(): Promise<HostedBadge[]> {
+    const result = await hostedPool().query<BadgeRow>(
+      `SELECT id, label, claimed_at, revoked_at, created_at, updated_at
+         FROM badges
+        ORDER BY created_at, id`,
+    )
+    return result.rows.map((row) => ({
+      id: row.id,
+      label: row.label,
+      claimed: Boolean(row.claimed_at),
+      revoked: Boolean(row.revoked_at),
+      claimedAt: row.claimed_at?.getTime() ?? null,
+      revokedAt: row.revoked_at?.getTime() ?? null,
+      createdAt: row.created_at.getTime(),
+      updatedAt: row.updated_at.getTime(),
+    }))
+  }
+
+  async createBadge(label: string, now = Date.now()) {
+    const badgeId = randomUUID()
+    const badgeSecret = randomToken(32)
+    await transaction(async (client) => {
+      await client.query(
+        `INSERT INTO badges (id, label, created_at, updated_at)
+         VALUES ($1, $2, to_timestamp($3 / 1000.0), to_timestamp($3 / 1000.0))`,
+        [badgeId, label, now],
+      )
+      await client.query(
+        `INSERT INTO badge_credentials (id, badge_id, secret_hmac, valid_from)
+         VALUES ($1, $2, $3, to_timestamp($4 / 1000.0))`,
+        [randomUUID(), badgeId, keyedHash(hostedConfig().deviceKey, badgeSecret), now],
+      )
+    })
+    return { badgeId, badgeSecret }
+  }
+
+  async createClaimCode(badgeId: string, now = Date.now()) {
+    return transaction(async (client) => {
+      const badge = await client.query<{ claimed_at: Date | null }>(
+        'SELECT claimed_at FROM badges WHERE id = $1 AND revoked_at IS NULL FOR UPDATE',
+        [badgeId],
+      )
+      if (!badge.rows[0] || badge.rows[0].claimed_at) return undefined
+      await client.query(
+        `UPDATE badge_claims
+            SET consumed_at = to_timestamp($2 / 1000.0)
+          WHERE badge_id = $1 AND consumed_at IS NULL`,
+        [badgeId, now],
+      )
+      await client.query('LOCK TABLE badge_claims IN SHARE ROW EXCLUSIVE MODE')
+      for (let attempt = 0; attempt < 20; attempt++) {
+        const code = randomInt(0, 1_000_000).toString().padStart(6, '0')
+        const codeHmac = keyedHash(hostedConfig().claimKey, code)
+        const collision = await client.query(
+          `SELECT 1 FROM badge_claims
+            WHERE code_hmac = $1 AND consumed_at IS NULL
+              AND expires_at > to_timestamp($2 / 1000.0)`,
+          [codeHmac, now],
+        )
+        if (collision.rowCount) continue
+        const expiresAt = now + 10 * 60_000
+        await client.query(
+          `INSERT INTO badge_claims (id, badge_id, code_hmac, expires_at, created_at)
+           VALUES ($1, $2, $3, to_timestamp($4 / 1000.0), to_timestamp($5 / 1000.0))`,
+          [randomUUID(), badgeId, codeHmac, expiresAt, now],
+        )
+        return { code, expiresAt }
+      }
+      throw new Error('A unique claim code is unavailable.')
+    })
+  }
+
+  async claimBadge(code: string, now = Date.now()) {
+    const codeHmac = keyedHash(hostedConfig().claimKey, code)
+    return transaction(async (client) => {
+      const result = await client.query<{ id: string; badge_id: string }>(
+        `SELECT c.id, c.badge_id
+           FROM badge_claims c
+           JOIN badges b ON b.id = c.badge_id
+          WHERE c.code_hmac = $1 AND c.consumed_at IS NULL
+            AND c.expires_at > to_timestamp($2 / 1000.0)
+            AND b.revoked_at IS NULL
+          FOR UPDATE OF c, b`,
+        [codeHmac, now],
+      )
+      const claim = result.rows[0]
+      if (!claim) return undefined
+      await client.query(
+        `UPDATE badge_claims
+            SET consumed_at = to_timestamp($2 / 1000.0)
+          WHERE badge_id = $1 AND consumed_at IS NULL`,
+        [claim.badge_id, now],
+      )
+      await client.query(
+        `UPDATE badges
+            SET claimed_at = COALESCE(claimed_at, to_timestamp($2 / 1000.0)),
+                updated_at = to_timestamp($2 / 1000.0)
+          WHERE id = $1`,
+        [claim.badge_id, now],
+      )
+      return claim.badge_id
+    })
+  }
+
+  async revokeBadge(badgeId: string, now = Date.now()) {
+    return transaction(async (client) => {
+      const badge = await client.query(
+        `UPDATE badges
+            SET revoked_at = COALESCE(revoked_at, to_timestamp($2 / 1000.0)),
+                updated_at = to_timestamp($2 / 1000.0)
+          WHERE id = $1
+          RETURNING id`,
+        [badgeId, now],
+      )
+      if (!badge.rowCount) return false
+      await client.query(
+        `UPDATE badge_credentials
+            SET revoked_at = COALESCE(revoked_at, to_timestamp($2 / 1000.0))
+          WHERE badge_id = $1`,
+        [badgeId, now],
+      )
+      await client.query(
+        `UPDATE badge_claims
+            SET consumed_at = COALESCE(consumed_at, to_timestamp($2 / 1000.0))
+          WHERE badge_id = $1`,
+        [badgeId, now],
+      )
+      return true
+    })
+  }
+
+  async rotateBadge(badgeId: string, now = Date.now()) {
+    const badgeSecret = randomToken(32)
+    return transaction(async (client) => {
+      const badge = await client.query(
+        'SELECT 1 FROM badges WHERE id = $1 AND revoked_at IS NULL FOR UPDATE',
+        [badgeId],
+      )
+      if (!badge.rowCount) return undefined
+      await client.query(
+        `UPDATE badge_credentials
+            SET valid_until = LEAST(
+              COALESCE(valid_until, to_timestamp(($2 + $3) / 1000.0)),
+              to_timestamp(($2 + $3) / 1000.0)
+            )
+          WHERE badge_id = $1 AND revoked_at IS NULL
+            AND (valid_until IS NULL OR valid_until > to_timestamp($2 / 1000.0))`,
+        [badgeId, now, 24 * 60 * 60_000],
+      )
+      await client.query(
+        `INSERT INTO badge_credentials (id, badge_id, secret_hmac, valid_from)
+         VALUES ($1, $2, $3, to_timestamp($4 / 1000.0))`,
+        [randomUUID(), badgeId, keyedHash(hostedConfig().deviceKey, badgeSecret), now],
+      )
+      await client.query(
+        'UPDATE badges SET updated_at = to_timestamp($2 / 1000.0) WHERE id = $1',
+        [badgeId, now],
+      )
+      return { badgeId, badgeSecret }
     })
   }
 

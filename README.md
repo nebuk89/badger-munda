@@ -54,6 +54,41 @@ Vite forwards `/api` and `/media` to the server on port 8787.
 The production server serves the built phone interface itself.
 Restart `npm start` after a new production build.
 
+## Hosted badge registry
+
+The hosted controller uses one private administrator password.
+The registry gives each badge a UUID and a separate 32-byte device secret.
+The service returns a device secret only after badge creation or administrator rotation.
+Save it then, and use the safe USB installer to provision the badge ID, service URL, and secret.
+The service stores only keyed HMAC values for device secrets and claim codes.
+
+Set these hosted environment variables in addition to the database and administrator settings:
+
+| Variable | Purpose |
+|---|---|
+| `CLAIM_CODE_HMAC_KEY` | Key for six-digit claim-code HMAC values |
+| `DEVICE_SECRET_HMAC_KEY` | Key for badge-secret HMAC values |
+
+Use a different random value for each key.
+Run `npm run db:migrate` to apply `drizzle/0001_badge_registry.sql` after the hosted service foundation migration.
+
+An administrator can create, list, claim, rotate, and revoke badges.
+Claim codes contain six digits, work once, and expire after ten minutes.
+This layer stores and consumes claim rows, but it does not issue codes from badge runtime.
+Secret rotation can overlap the old credential for no more than 24 hours.
+Rotation still needs USB reprovisioning.
+The server never sends a replacement secret to badge runtime.
+
+| Endpoint | Purpose | Authentication |
+|---|---|---|
+| `GET /api/badges` | List badge identities and claim status | Administrator cookie |
+| `POST /api/badges` | Create a badge and show its secret once | Cookie and CSRF |
+| `POST /api/badges/claim` | Consume a six-digit claim code | Cookie and CSRF |
+| `POST /api/badges/:badgeId/rotate-secret` | Create a secret for USB reprovisioning | Cookie and CSRF |
+| `POST /api/badges/:badgeId/revoke` | Revoke a badge and its credentials | Cookie and CSRF |
+
+Do not put passwords, hashes, credentials, codes, or the database URL in URLs or logs.
+
 ## Content
 
 `npm run content` creates thirteen original Underhive adverts and notices, plus six game-event videos.

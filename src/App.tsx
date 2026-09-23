@@ -14,6 +14,7 @@ import { BroadcastPreview } from './components/BroadcastPreview'
 import { ClipPreview } from './components/ClipPreview'
 import { ConnectDialog } from './components/ConnectDialog'
 import { GameEventControls } from './components/GameEventControls'
+import { HostedBadgesDialog } from './components/HostedBadgesDialog'
 import { UploadDialog } from './components/UploadDialog'
 import { ApiError, api, command, errorMessage, setCsrfToken, setHostedMode, type Setup } from './lib/api'
 import './App.css'
@@ -313,7 +314,7 @@ function Station({ hosted, onUnpaired }: { hosted: boolean; onUnpaired: (message
           <a href="#game-events"><Zap size={15} /> Game events</a>
           <a href="#library"><Film size={15} /> Content library</a>
         </nav>
-        <div className="header-actions"><span className={`connection-pill ${receipt.kind}`}><span className={`status-dot ${receipt.kind}`} />{receipt.label}</span><Button variant="outline" onClick={() => setConnectOpen(true)}><Link2 /><span>{hosted ? 'Session' : 'Connect'}</span></Button></div>
+        <div className="header-actions"><span className={`connection-pill ${receipt.kind}`}><span className={`status-dot ${receipt.kind}`} />{receipt.label}</span><Button variant="outline" onClick={() => setConnectOpen(true)}><Link2 /><span>{hosted ? 'Badges' : 'Connect'}</span></Button></div>
       </header>
 
       <main>
@@ -408,17 +409,24 @@ function Station({ hosted, onUnpaired }: { hosted: boolean; onUnpaired: (message
       </main>
       <footer className="station-footer"><div><RadioTower size={16} /><span>UNDERHIVE BROADCAST</span><i> / </i><span>INDEPENDENT BY DESIGN.</span></div><span>SECTOR 07 <i>●</i> {state.server.width} × {state.server.height} PIXELS OF TROUBLE</span></footer>
       <ClipPreview clip={preview} onClose={() => setPreview(null)} />
-      <ConnectDialog
-        state={state}
-        open={connectOpen}
-        onOpenChange={setConnectOpen}
-        onLogout={() => logout.mutate()}
-        loggingOut={logout.isPending}
-        logoutError={logout.isError ? errorMessage(logout.error) : ''}
-        hosted={hosted}
-        onRevokeAll={() => revokeAll.mutate()}
-        revokingAll={revokeAll.isPending}
-      />
+      {hosted
+        ? <HostedBadgesDialog
+            open={connectOpen}
+            onOpenChange={setConnectOpen}
+            onLogout={() => logout.mutate()}
+            loggingOut={logout.isPending}
+            logoutError={logout.isError ? errorMessage(logout.error) : ''}
+            onRevokeAll={() => revokeAll.mutate()}
+            revokingAll={revokeAll.isPending}
+          />
+        : <ConnectDialog
+            state={state}
+            open={connectOpen}
+            onOpenChange={setConnectOpen}
+            onLogout={() => logout.mutate()}
+            loggingOut={logout.isPending}
+            logoutError={logout.isError ? errorMessage(logout.error) : ''}
+          />}
     </div>
   )
 }

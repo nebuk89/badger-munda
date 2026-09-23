@@ -185,6 +185,47 @@ export function createHostedApp(options: { store?: HostedStore; ready?: () => Pr
     res.json(state)
   }))
 
+  app.get('/api/badges', controller, asyncRoute(async (_req, res) => {
+    res.json({ badges: await store.badges() })
+  }))
+  app.post('/api/badges', controller, csrf, controllerWriteLimit, asyncRoute(async (req, res) => {
+    const body = z.object({ label: z.string().trim().min(1).max(80) }).parse(req.body)
+    const badge = await store.createBadge(body.label)
+    const sessionId = sessions.get(req)!.id
+    await store.audit('badge.created', { label: body.label }, sessionId, badge.badgeId)
+    res.status(201).json({ ...badge, serviceUrl: config.appOrigin })
+  }))
+  app.post('/api/badges/claim', controller, csrf, controllerWriteLimit, asyncRoute(async (req, res) => {
+    if (!await consumeLimit(res, 'badge-claim', `${sessions.get(req)!.id}:${clientIp(req)}`, 10, 10 * 60_000)) return
+    const body = z.object({ code: z.string().regex(/^\d{6}$/) }).parse(req.body)
+    const badgeId = await store.claimBadge(body.code)
+    if (!badgeId) {
+      res.status(409).json({ error: 'The claim code is invalid, expired, or already used.' })
+      return
+    }
+    await store.audit('badge.claimed', {}, sessions.get(req)!.id, badgeId)
+    res.status(201).json({ badgeId })
+  }))
+  app.post('/api/badges/:badgeId/revoke', controller, csrf, controllerWriteLimit, asyncRoute(async (req, res) => {
+    const badgeId = z.string().uuid().parse(req.params.badgeId)
+    if (!await store.revokeBadge(badgeId)) {
+      res.status(404).json({ error: 'Badge not found.' })
+      return
+    }
+    await store.audit('badge.revoked', {}, sessions.get(req)!.id, badgeId)
+    res.status(204).end()
+  }))
+  app.post('/api/badges/:badgeId/rotate-secret', controller, csrf, controllerWriteLimit, asyncRoute(async (req, res) => {
+    const badgeId = z.string().uuid().parse(req.params.badgeId)
+    const badge = await store.rotateBadge(badgeId)
+    if (!badge) {
+      res.status(404).json({ error: 'Active badge not found.' })
+      return
+    }
+    await store.audit('badge.secret_rotated', {}, sessions.get(req)!.id, badgeId)
+    res.json({ ...badge, serviceUrl: config.appOrigin })
+  }))
+
   app.get('/api/health/live', (_req, res) => res.json({ ok: true }))
   app.get('/api/health/ready', asyncRoute(async (_req, res) => {
     if (options.ready) await options.ready()

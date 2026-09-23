@@ -9,6 +9,8 @@ import { hashPassword } from './password.ts'
 import type { HostedStore } from './store.ts'
 
 const origin = 'https://underhive.example'
+const badgeId = '11111111-1111-4111-8111-111111111111'
+const badgeSecret = 'badge-secret-123456789012345678901234'
 const csrf = 'csrf-token-for-hosted-tests'
 const sessionToken = 'session-token-for-hosted-tests'
 
@@ -55,10 +57,14 @@ function stationState(revision = 1): StationState {
 class FakeStore {
   revision = 1
   failState = false
+  claimed = false
+  claimConsumed = false
+  badgeRevoked = false
   commandCalls: Array<{ requestId: string; revision: number }> = []
   revoked: string[] = []
   revokeAllCount = 0
   auditEvents: string[] = []
+  auditDetails: Array<{ eventType: string; detail: Record<string, unknown>; badgeId?: string }> = []
 
   async session(token?: string) {
     return token === sessionToken
@@ -78,8 +84,9 @@ class FakeStore {
   async recordRateLimitFailure() {}
   async clearRateLimit() {}
 
-  async audit(eventType: string) {
+  async audit(eventType: string, detail: Record<string, unknown>, _sessionId?: string, auditedBadgeId?: string) {
     this.auditEvents.push(eventType)
+    this.auditDetails.push({ eventType, detail, badgeId: auditedBadgeId })
   }
 
   async createSession() {
@@ -109,6 +116,41 @@ class FakeStore {
     this.revision++
     return { revision: this.revision }
   }
+
+  async badges() {
+    return [{
+      id: badgeId,
+      label: 'Test badge',
+      claimed: this.claimed,
+      revoked: this.badgeRevoked,
+      claimedAt: this.claimed ? Date.now() : null,
+      revokedAt: this.badgeRevoked ? Date.now() : null,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    }]
+  }
+
+  async createBadge(_label: string) {
+    return { badgeId, badgeSecret }
+  }
+
+  async claimBadge(code: string) {
+    if (code !== '123456' || this.claimConsumed || this.badgeRevoked) return undefined
+    this.claimed = true
+    this.claimConsumed = true
+    return badgeId
+  }
+
+  async revokeBadge(id: string) {
+    if (id !== badgeId) return false
+    this.badgeRevoked = true
+    return true
+  }
+
+  async rotateBadge(id: string) {
+    if (id !== badgeId || this.badgeRevoked) return undefined
+    return { badgeId, badgeSecret: `${badgeSecret}-rotated` }
+  }
 }
 
 const store = new FakeStore()
@@ -120,6 +162,8 @@ before(async () => {
   process.env.ADMIN_PASSWORD_HASH = await hashPassword('correct horse battery staple')
   process.env.SESSION_TOKEN_PEPPER = 'session-pepper-for-tests'
   process.env.IP_RATE_LIMIT_HMAC_KEY = 'rate-limit-key-for-tests'
+  process.env.CLAIM_CODE_HMAC_KEY = 'claim-key-for-tests'
+  process.env.DEVICE_SECRET_HMAC_KEY = 'device-key-for-tests'
 
   const app = createHostedApp({
     store: store as unknown as HostedStore,
@@ -249,4 +293,82 @@ test('hosted logout and revoke-all clear administrator sessions', async () => {
   const revoke = await fetch(`${baseUrl}/api/session/revoke-all`, { method: 'POST', headers })
   assert.equal(revoke.status, 204)
   assert.equal(store.revokeAllCount, 1)
+})
+
+test('badge administration creates, lists, claims, rotates, and revokes credentials', async () => {
+  store.claimed = false
+  store.claimConsumed = false
+  store.badgeRevoked = false
+  const session = await login()
+  const headers = {
+    'Content-Type': 'application/json',
+    Cookie: session.cookie,
+    Origin: origin,
+    'X-CSRF-Token': session.csrfToken,
+  }
+
+  const created = await fetch(`${baseUrl}/api/badges`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ label: 'Test badge' }),
+  })
+  assert.equal(created.status, 201)
+  assert.deepEqual(await created.json(), { badgeId, badgeSecret, serviceUrl: origin })
+
+  const listed = await fetch(`${baseUrl}/api/badges`, { headers: { Cookie: session.cookie } })
+  assert.equal(listed.status, 200)
+  assert.equal((await listed.json() as { badges: unknown[] }).badges.length, 1)
+
+  const invalidClaim = await fetch(`${baseUrl}/api/badges/claim`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ code: '654321' }),
+  })
+  assert.equal(invalidClaim.status, 409)
+
+  const claimed = await fetch(`${baseUrl}/api/badges/claim`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ code: '123456' }),
+  })
+  assert.equal(claimed.status, 201)
+  assert.deepEqual(await claimed.json(), { badgeId })
+
+  const reusedClaim = await fetch(`${baseUrl}/api/badges/claim`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ code: '123456' }),
+  })
+  assert.equal(reusedClaim.status, 409)
+
+  const rotated = await fetch(`${baseUrl}/api/badges/${badgeId}/rotate-secret`, {
+    method: 'POST',
+    headers,
+  })
+  assert.equal(rotated.status, 200)
+  assert.deepEqual(await rotated.json(), {
+    badgeId,
+    badgeSecret: `${badgeSecret}-rotated`,
+    serviceUrl: origin,
+  })
+
+  const revoked = await fetch(`${baseUrl}/api/badges/${badgeId}/revoke`, {
+    method: 'POST',
+    headers,
+  })
+  assert.equal(revoked.status, 204)
+
+  const rotateRevoked = await fetch(`${baseUrl}/api/badges/${badgeId}/rotate-secret`, {
+    method: 'POST',
+    headers,
+  })
+  assert.equal(rotateRevoked.status, 404)
+  assert.deepEqual(store.auditEvents.slice(-4), [
+    'badge.created',
+    'badge.claimed',
+    'badge.secret_rotated',
+    'badge.revoked',
+  ])
+  assert.equal(JSON.stringify(store.auditDetails).includes(badgeSecret), false)
+  assert.equal(JSON.stringify(store.auditDetails).includes('123456'), false)
 })
