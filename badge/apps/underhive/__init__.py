@@ -8,17 +8,30 @@ from badgeware import screen, brushes
 
 try:
     from . import config
+    from .defaults import SETUP_HOLD_MS
+    from .onboarding import WifiOnboarding
     from .renderer import RawSink, RamPngSink, Rgb332Sink, UnsupportedFirmware
+    from .state_store import StateError, StateStore
     from .transport import Transport
+    from .wifi_manager import WifiProfiles
 except ImportError:
     import config
+    from defaults import SETUP_HOLD_MS
+    from onboarding import WifiOnboarding
     from renderer import RawSink, RamPngSink, Rgb332Sink, UnsupportedFirmware
+    from state_store import StateError, StateStore
     from transport import Transport
+    from wifi_manager import WifiProfiles
 
 _sink = None
 _transport = None
 _wlan = None
 _credentials = None
+_factory_credentials = None
+_profiles = None
+_onboarding = None
+_socket_module = None
+_select_module = None
 _connecting_since = None
 _retry_at = None
 _notice = "Starting broadcaster"
@@ -29,6 +42,8 @@ _wifi_errors = {}
 _black = None
 _white = None
 _accent = None
+_setup_hold_since = None
+_setup_triggered = False
 
 
 def _configure_display_rotation():
@@ -95,10 +110,131 @@ def _show_notice(message):
     screen.text("HOME: return to menu", 8, 99)
 
 
+def _start_playback():
+    global _sink, _transport
+    if _transport is not None:
+        return
+    gc.collect()
+    print("Underhive RAM: before display", gc.mem_free())
+    if config.FRAME_FORMAT == "rgba":
+        _sink = RawSink(screen)
+    elif config.FRAME_FORMAT in ("png", "rgb332"):
+        import vfs
+        sink_type = Rgb332Sink if config.FRAME_FORMAT == "rgb332" else RamPngSink
+        _sink = sink_type(screen, vfs, gc.mem_free())
+    else:
+        raise ValueError("unsupported configured format")
+    _transport = Transport(
+        _sink, config.SERVER_URL, config.DEVICE_TOKEN, config.DEVICE_ID,
+        _socket_module, _select_module, time.ticks_diff, time.ticks_add,
+        config.TARGET_FPS
+    )
+    print("Underhive RAM: after transport", gc.mem_free())
+    _wlan.active(True)
+
+
+def _stop_playback():
+    global _sink, _transport
+    if _transport is not None:
+        _transport.close()
+        _transport = None
+    if _sink is not None:
+        _sink.close()
+        _sink = None
+
+
+def _preferred_credentials():
+    saved = _profiles.selected_credentials() if _profiles is not None else None
+    return saved or _factory_credentials
+
+
+def _setup_requested(now):
+    global _setup_hold_since, _setup_triggered
+    try:
+        from badgeware import io
+    except ImportError:
+        return False
+    held = getattr(io, "held", ())
+    both = (getattr(io, "BUTTON_A", None) in held
+            and getattr(io, "BUTTON_C", None) in held)
+    if not both:
+        _setup_hold_since = None
+        _setup_triggered = False
+        return False
+    if _setup_hold_since is None:
+        _setup_hold_since = now
+        return False
+    if (not _setup_triggered
+            and time.ticks_diff(now, _setup_hold_since) >= SETUP_HOLD_MS):
+        _setup_triggered = True
+        return True
+    return False
+
+
+def _setup_cancel_pressed():
+    try:
+        from badgeware import io
+    except ImportError:
+        return False
+    return getattr(io, "BUTTON_B", None) in getattr(io, "pressed", ())
+
+
+def _show_setup():
+    state = _onboarding.state
+    screen.brush = _black
+    screen.clear()
+    screen.brush = _accent
+    screen.text("WI-FI SETUP", 8, 8)
+    screen.brush = _white
+    if state == "scanning":
+        screen.text("Scanning networks", 8, 34)
+        screen.text("B: cancel", 8, 99)
+        return
+    if state == "joining":
+        screen.text(_onboarding.message, 8, 34)
+        screen.text("Testing connection", 8, 56)
+        screen.text("B: cancel", 8, 99)
+        return
+    screen.text(_onboarding.message or "Join this network", 8, 28)
+    screen.text(_onboarding.ap_ssid, 8, 45)
+    screen.text("Key: " + _onboarding.ap_password, 8, 62)
+    screen.text(_onboarding.url, 8, 79)
+    screen.text("B: cancel", 8, 103)
+
+
+def _begin_setup(now):
+    global _notice, _connecting_since, _retry_at
+    _stop_playback()
+    _connecting_since = None
+    _retry_at = None
+    _notice = "Starting Wi-Fi setup"
+    _onboarding.begin(now)
+
+
+def _complete_setup(result):
+    global _credentials, _notice, _wlan, _connecting_since, _retry_at
+    status, credentials = result
+    _wlan = _onboarding.sta
+    _onboarding.close()
+    _connecting_since = None
+    _retry_at = None
+    if status == "connected":
+        _credentials = credentials
+        _notice = "Connecting broadcaster"
+    else:
+        _credentials = _preferred_credentials()
+        _notice = ("Hold A+C: Wi-Fi setup" if _credentials is None
+                   else "Connecting Wi-Fi")
+    if _credentials is not None or _wlan.isconnected():
+        _start_playback()
+
+
 def init():
     global _sink, _transport, _wlan, _credentials, _notice
     global _connecting_since, _retry_at, _last_notice, _black, _white, _accent
     global _notice_started, _wifi_state, _wifi_errors
+    global _profiles, _onboarding, _factory_credentials
+    global _socket_module, _select_module, _setup_hold_since, _setup_triggered
     _last_notice = None
     _notice_started = time.ticks_ms()
     _wifi_state = "Connecting Wi-Fi"
@@ -107,11 +243,15 @@ def init():
     _black = brushes.color(10, 12, 14)
     _white = brushes.color(215, 220, 220)
     _accent = brushes.color(220, 250, 85)
+    _setup_hold_since = None
+    _setup_triggered = False
     try:
         _configure_display_rotation()
         import network
         import socket
         import select
+        _socket_module = socket
+        _select_module = select
         _wifi_errors = {
             getattr(network, "STAT_NO_AP_FOUND", -2): "Wi-Fi network not found",
             getattr(network, "STAT_WRONG_PASSWORD", -3): "Wi-Fi password rejected",
@@ -123,27 +263,22 @@ def init():
         except ImportError:
             from protocol import validate_config
         validate_config(config.SERVER_URL, config.DEVICE_TOKEN, config.DEVICE_ID)
-        _credentials = _wifi_credentials()
+        _factory_credentials = _wifi_credentials()
+        _profiles = WifiProfiles(StateStore())
+        try:
+            _profiles.load()
+        except StateError as error:
+            print("Underhive state:", type(error).__name__)
+        _credentials = _preferred_credentials()
         _wlan = network.WLAN(network.STA_IF)
-        if not _wlan.isconnected() and _credentials is None:
-            _notice = "Set Wi-Fi on BADGER drive"
-            return
-        gc.collect()
-        print("Underhive RAM: before display", gc.mem_free())
-        if config.FRAME_FORMAT == "rgba":
-            _sink = RawSink(screen)
-        elif config.FRAME_FORMAT in ("png", "rgb332"):
-            import vfs
-            sink_type = Rgb332Sink if config.FRAME_FORMAT == "rgb332" else RamPngSink
-            _sink = sink_type(screen, vfs, gc.mem_free())
-        else:
-            raise ValueError("unsupported configured format")
-        _transport = Transport(
-            _sink, config.SERVER_URL, config.DEVICE_TOKEN, config.DEVICE_ID,
-            socket, select, time.ticks_diff, time.ticks_add, config.TARGET_FPS
+        _onboarding = WifiOnboarding(
+            network, socket, _profiles, time.ticks_diff
         )
-        print("Underhive RAM: after transport", gc.mem_free())
-        _wlan.active(True)
+        if not _wlan.isconnected() and _credentials is None:
+            _wlan.active(True)
+            _notice = "Hold A+C: Wi-Fi setup"
+            return
+        _start_playback()
         _notice = "Connecting Wi-Fi"
     except MemoryError as error:
         _notice = "Not enough free RAM"
@@ -187,10 +322,28 @@ def _connected(now):
 
 def update():
     global _last_notice, _retry_at, _wifi_state
+    now = time.ticks_ms()
+    if _onboarding is not None and _onboarding.active:
+        if _setup_cancel_pressed():
+            _onboarding.cancel()
+        _onboarding.update(now)
+        result = _onboarding.take_result()
+        if result is not None:
+            try:
+                _complete_setup(result)
+            except (MemoryError, OSError, ValueError, UnsupportedFirmware) as error:
+                print("Underhive setup:", type(error).__name__)
+                _stop_playback()
+        if _onboarding.active:
+            _show_setup()
+            return
+    if _onboarding is not None and _setup_requested(now):
+        _begin_setup(now)
+        _show_setup()
+        return
     if _transport is None:
         _show_notice(_notice)
         return
-    now = time.ticks_ms()
     _transport.confirm_presented(now)
     try:
         connected = _connected(now)
@@ -212,13 +365,10 @@ def update():
 
 
 def on_exit():
-    global _sink, _transport, _credentials
+    global _credentials
     # The stock HOME IRQ invokes this before resetting; do not disconnect a
     # shared Wi-Fi connection, sleep, retry, or write persistent state here.
-    if _transport is not None:
-        _transport.close()
-        _transport = None
-    if _sink is not None:
-        _sink.close()
-        _sink = None
+    if _onboarding is not None:
+        _onboarding.close()
+    _stop_playback()
     _credentials = None
