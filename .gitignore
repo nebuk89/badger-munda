@@ -34,3 +34,4 @@ badge-config.py
 secrets.py
 test-results/
 playwright-report/
+generated/

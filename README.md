@@ -108,6 +108,15 @@ These files are a rebuildable frame cache, separate from the sample MP4s.
 The repository excludes the cache, private settings, and device backups.
 Use `npm run content` for the game-event controls; normal uploads become custom clips, not game-event presets.
 
+### Package the built-in content
+
+`npm run content:hosted` packages the nineteen built-in clips for a hosted content store.
+The package contains 1,216 complete `UBF1` frames with indexed PNG payloads, plus the sample posters and videos.
+Each frame keeps a stable catalog-wide frame ID from 1 through 1,216.
+The command writes the package under `generated/hosted/content/v1/<catalog-hash>/`.
+The catalog hash depends only on the packaged content, so the same inputs make the same package.
+The repository excludes the generated package.
+
 ### Dispatch a game event
 
 The **Game events** section contains six illustrated controls for moments during a game.
