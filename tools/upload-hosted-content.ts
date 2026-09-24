@@ -11,6 +11,21 @@ interface PackageAsset {
   bytes: Buffer
 }
 
+export function resolveBlobAuthOptions(
+  token: string | undefined,
+  environment: NodeJS.ProcessEnv = process.env,
+): { token?: string } {
+  if (token !== undefined) {
+    if (!token) throw new Error('BLOB_READ_WRITE_TOKEN is required unless --dry-run is set.')
+    return { token }
+  }
+  if (environment.VERCEL_OIDC_TOKEN && environment.BLOB_STORE_ID) return {}
+  if (!environment.BLOB_READ_WRITE_TOKEN) {
+    throw new Error('BLOB_READ_WRITE_TOKEN is required unless --dry-run is set.')
+  }
+  return { token: environment.BLOB_READ_WRITE_TOKEN }
+}
+
 function digest(value: Buffer) {
   return createHash('sha256').update(value).digest('hex')
 }
@@ -123,8 +138,7 @@ export async function uploadHostedContent(
       catalogPath: `content/v1/${checked.catalog.catalogHash}/catalog.json`,
     }
   }
-  const token = options.token ?? process.env.BLOB_READ_WRITE_TOKEN
-  if (!token) throw new Error('BLOB_READ_WRITE_TOKEN is required unless --dry-run is set.')
+  const authOptions = resolveBlobAuthOptions(options.token)
   const uploaded: Record<string, string> = {}
   for (const asset of checked.assets) {
     const blob = await put(asset.pathname, asset.bytes, {
@@ -133,7 +147,7 @@ export async function uploadHostedContent(
       allowOverwrite: false,
       cacheControlMaxAge: 31_536_000,
       contentType: asset.contentType,
-      token,
+      ...authOptions,
     })
     uploaded[asset.pathname] = blob.url
   }

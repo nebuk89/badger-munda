@@ -172,8 +172,20 @@ npm run content:hosted
 npm run content:upload:check
 ```
 
-Set `BLOB_READ_WRITE_TOKEN` only when you publish the package.
-Then run `npm run content:upload`.
+Link the local directory to the Vercel project and pull its environment:
+
+```sh
+npx vercel link
+npx vercel env pull .env.local
+set -a
+. ./.env.local
+set +a
+pnpm content:upload
+```
+
+The uploader uses OIDC when `VERCEL_OIDC_TOKEN` and `BLOB_STORE_ID` are set.
+In this mode, it does not pass `BLOB_READ_WRITE_TOKEN`, including Vercel's protected `[SENSITIVE]` placeholder.
+If OIDC is not available, set a valid `BLOB_READ_WRITE_TOKEN` before you run the upload.
 The uploader uses public Blob objects, fixed content paths, no random suffix, no overwrite, and a one-year cache lifetime.
 It uploads `catalog.json`, complete `UBF1` indexed-PNG frames, posters, and MP4 previews.
 It rejects raw RGBA files, changed hashes, missing files, extra files, and unsupported file types.
