@@ -540,6 +540,59 @@ class AppImportTests(unittest.TestCase):
         self.assertEqual(module._wifi_state, "Wi-Fi join timed out")
         self.assertEqual(module._retry_at, 45000)
 
+    def test_setup_gesture_requires_both_buttons_for_three_seconds(self):
+        module = self.load_app()
+        button_a, button_c = object(), object()
+        badge_io = types.SimpleNamespace(
+            BUTTON_A=button_a, BUTTON_C=button_c, held=[], pressed=[]
+        )
+        fake = types.SimpleNamespace(io=badge_io)
+        module.time = types.SimpleNamespace(ticks_diff=lambda a, b: a - b)
+        with patch.dict(sys.modules, {"badgeware": fake}):
+            badge_io.held = [button_a]
+            self.assertFalse(module._setup_requested(0))
+            badge_io.held = [button_a, button_c]
+            self.assertFalse(module._setup_requested(1))
+            self.assertFalse(module._setup_requested(3000))
+            self.assertTrue(module._setup_requested(3001))
+            self.assertFalse(module._setup_requested(6000))
+            badge_io.held = []
+            self.assertFalse(module._setup_requested(6001))
+            badge_io.held = [button_a, button_c]
+            self.assertFalse(module._setup_requested(6002))
+            self.assertTrue(module._setup_requested(9002))
+
+    def test_saved_state_precedes_factory_credentials_and_falls_back(self):
+        module = self.load_app()
+        module._factory_credentials = ("factory-network", "factory-password")
+        module._profiles = types.SimpleNamespace(
+            selected_credentials=lambda: (b"saved-network", "saved-password")
+        )
+        self.assertEqual(
+            module._preferred_credentials(),
+            (b"saved-network", "saved-password"),
+        )
+        module._profiles = types.SimpleNamespace(selected_credentials=lambda: None)
+        self.assertEqual(
+            module._preferred_credentials(),
+            ("factory-network", "factory-password"),
+        )
+
+    def test_home_closes_setup_without_writing_or_disconnecting_sta(self):
+        module = self.load_app()
+        events = []
+        module._onboarding = types.SimpleNamespace(
+            close=lambda: events.append("setup-close")
+        )
+        module._transport = types.SimpleNamespace(
+            close=lambda: events.append("transport-close")
+        )
+        module._sink = types.SimpleNamespace(close=lambda: events.append("sink-close"))
+        module._credentials = ("network", "password")
+        module.on_exit()
+        self.assertEqual(events, ["setup-close", "transport-close", "sink-close"])
+        self.assertIsNone(module._credentials)
+
     def test_saved_wifi_file_takes_priority_over_cached_factory_settings(self):
         module = self.load_app()
         from io import StringIO

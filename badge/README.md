@@ -203,6 +203,43 @@ New installations default to the upside-down tabletop orientation.
 Set `BADGE_ROTATION=0` when you run the installer for an upright badge.
 Eject BADGER safely before a normal RESET.
 
+### On-device Wi-Fi setup
+
+Underhive can save up to five Wi-Fi networks in
+`/state/underhive/wifi.v1.json`. The app checks this state before it uses the
+existing `/system/secrets.py` fallback. It never changes the read-only
+`/system` copy during normal runtime.
+
+Hold A and C together for three seconds to start setup. The app closes the
+frame transport, scans in station mode, then starts a WPA access point. The
+badge shows:
+
+* the temporary `UNDERHIVE-XXXX` network name;
+* the random access-point password;
+* the actual manual setup URL from the AP interface.
+
+Join that network from a phone. Open the shown URL. Select or enter a network,
+then enter its password. The badge stops AP mode and tests the submitted
+network for 30 seconds. It saves the profile only after association succeeds.
+If the test fails, the same setup access point starts again. Press B to cancel.
+HOME still returns to the stock launcher.
+
+The local HTTP server accepts one bounded request at a time. It rejects
+chunked requests, duplicate fields, oversized requests, invalid lengths, and
+mutations without the setup nonce. It never returns saved passwords.
+
+The exact MonaOS v4.03 source proves the AP configuration, WPA key, channel,
+scan, and `ifconfig()` APIs. A real badge must still prove DHCP and phone
+association. The manual URL is the required path. Captive DNS is not enabled
+until Android and iPhone hardware checks pass.
+
+State replacement uses a checked `.new` file and keeps the prior valid `.bak`
+copy. A corrupt primary file falls back to a valid candidate or backup. If no
+state copy is valid, Underhive keeps the `/system/secrets.py` fallback.
+
+The setup path does not change `SERVER_URL`, `DEVICE_TOKEN`, `DEVICE_ID`, the
+local Mac broadcaster, frame rendering, pairing cards, or programme behavior.
+
 Prepare the serial tools once:
 
 ```sh
@@ -219,6 +256,7 @@ Set Wi-Fi from a local interactive terminal:
 Both entries hide typing. The tool saves credentials in the persistent `/system/secrets.py` file.
 It preserves a private `/system/secrets.py.before-underhive` backup, flushes the write, and checks the saved values.
 It does not save credentials on the Mac.
+This USB path remains the service and recovery fallback.
 Use the exact network name, including case, for a visible 2.4 GHz network.
 The Mac and phone can use 5 GHz on the same reachable LAN.
 A new password does not fix `Wi-Fi network not found`.
