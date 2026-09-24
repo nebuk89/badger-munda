@@ -76,7 +76,8 @@ The installer rejects all other origins.
 It writes `/state/underhive/hosted.v1.json` and a separate trusted UTC seed.
 It does not put hosted credentials in Wi-Fi state, logs, or error text.
 It preserves an installed local `config.py`, Wi-Fi state, firmware, `main.py`, and unrelated files.
-This foundation does not start protocol 2 sync, Blob downloads, playback, claims, or receipts.
+The badge uses these files to start protocol 2 sync after Wi-Fi connects.
+Local mode still uses the existing Mac frame transport when hosted state is absent.
 
 Set these hosted environment variables in addition to the database and administrator settings:
 
@@ -97,7 +98,7 @@ This layer stores and consumes claim rows, but it does not issue codes from badg
 Secret rotation can overlap the old credential for no more than 24 hours.
 Rotation still needs USB reprovisioning.
 The server never sends a replacement secret to badge runtime.
-The protocol 2 client will send `Authorization: Badge <badge-id>.<badge-secret>` to `POST /api/device/sync`.
+The protocol 2 client sends `Authorization: Badge <badge-id>.<badge-secret>` to `POST /api/device/sync`.
 The service checks a keyed HMAC value and accepts each active overlap credential until its expiry.
 Revoked badges and revoked credentials fail with the same invalid-credential response.
 
@@ -105,8 +106,15 @@ Protocol 2 reports a boot ID, a firmware version, an optional known station revi
 An unclaimed badge receives one six-digit claim code with a ten-minute expiry.
 A claimed badge receives the server time, station and command revisions, playback generation, pause state, clip timing, FPS, frame count, and a public Blob `{frame}` URL template.
 The service stores one presence row and one latest receipt row for each badge.
-The badge fetches each immutable `UBF1` indexed-PNG frame from Blob.
+The badge derives the immutable catalog URL from the approved Blob frame URL.
+It streams and hashes the catalog, and it retains only the active clip index.
+It fetches each immutable `UBF1` indexed-PNG frame directly from Blob.
 The Vercel Function does not proxy frames or send a long frame stream.
+The badge checks protocol versions, revisions, catalog identity, frame paths,
+frame IDs, hashes, UBF1 headers, response lengths, and PNG bounds.
+It rejects non-Vercel Blob origins and content paths outside the active catalog.
+The client supports at most 256 frames in one active clip to keep memory bounded.
+This layer does not show claim codes or send playback receipts.
 
 | Endpoint | Purpose | Authentication |
 |---|---|---|

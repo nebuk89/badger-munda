@@ -13,7 +13,7 @@ from hosted_config import (
 )
 from hosted_transport import (
     HostedTransportError, VerifiedHttps, badge_authorization, build_request,
-    redact_secret,
+    open_response, redact_secret,
 )
 from protocol import validate_config
 from state_store import StateError, StateStore
@@ -169,6 +169,18 @@ class TrustedTimeTests(unittest.TestCase):
             clock.advance(1_790_265_599)
         self.assertEqual(clock.advance(1_790_265_700)["unixSeconds"], 1_790_265_700)
 
+    def test_verified_time_observation_limits_flash_writes(self):
+        clock, _time, _rtc = self.clock(1_790_265_600)
+        clock.advance(1_790_265_600)
+        source = pathlib.Path(self.temp.name) / "trusted-time.v1.json"
+        first = source.read_text()
+        for seconds in range(1_790_265_700, 1_790_266_700, 100):
+            clock.observe(seconds)
+        self.assertEqual(source.read_text(), first)
+        self.assertEqual(clock.state["unixSeconds"], 1_790_266_600)
+        clock.observe(1_790_352_100)
+        self.assertNotEqual(source.read_text(), first)
+
     def test_unsupported_epoch_fails_closed(self):
         trusted = 1_790_265_600
         time_module = WrongEpochTime(0)
@@ -256,6 +268,56 @@ class VerifiedHttpsTests(unittest.TestCase):
         with self.assertRaisesRegex(HostedTransportError, "TLS verification unavailable"):
             transport.connect()
         self.assertEqual(opened, [])
+
+
+class HttpsResponseTests(unittest.TestCase):
+    class Socket:
+        def __init__(self, response):
+            self.response = bytearray(response)
+            self.sent = bytearray()
+            self.closed = False
+
+        def send(self, data):
+            count = min(7, len(data))
+            self.sent.extend(data[:count])
+            return count
+
+        def read(self, count):
+            count = min(count, 11, len(self.response))
+            result = bytes(self.response[:count])
+            del self.response[:count]
+            return result
+
+        def close(self):
+            self.closed = True
+
+    def response(self, headers=b"Content-Length: 4\r\n", body=b"test"):
+        return b"HTTP/1.1 200 OK\r\n" + headers + b"\r\n" + body
+
+    def test_exact_length_body_streams_in_bounded_fragments(self):
+        socket = self.Socket(self.response())
+        connection = types.SimpleNamespace(connect=lambda: socket)
+        body = open_response(connection, b"GET / HTTP/1.1\r\n\r\n", 8)
+        received = bytearray()
+        while len(received) < body.length:
+            received.extend(body.read(2))
+        self.assertEqual(received, b"test")
+        body.finish()
+        body.close()
+        self.assertTrue(socket.closed)
+
+    def test_chunked_duplicate_and_oversized_lengths_are_rejected(self):
+        cases = (
+            self.response(b"Transfer-Encoding: chunked\r\n", b"4\r\ntest\r\n0\r\n\r\n"),
+            self.response(b"Content-Length: 4\r\nContent-Length: 4\r\n"),
+            self.response(b"Content-Length: 9\r\n", b"123456789"),
+        )
+        for response in cases:
+            socket = self.Socket(response)
+            connection = types.SimpleNamespace(connect=lambda: socket)
+            with self.subTest(response=response[:80]), self.assertRaises(HostedTransportError):
+                open_response(connection, b"GET / HTTP/1.1\r\n\r\n", 8)
+            self.assertTrue(socket.closed)
 
 
 if __name__ == "__main__":

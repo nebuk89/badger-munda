@@ -3,12 +3,15 @@
 import gc
 import sys
 import time
+import binascii
+import os
 
 from badgeware import screen, brushes
 
 try:
     from . import config
     from .defaults import SETUP_HOLD_MS
+    from .hosted_config import HostedSettings
     from .onboarding import WifiOnboarding
     from .renderer import RawSink, RamPngSink, Rgb332Sink, UnsupportedFirmware
     from .state_store import StateError, StateStore
@@ -17,6 +20,7 @@ try:
 except ImportError:
     import config
     from defaults import SETUP_HOLD_MS
+    from hosted_config import HostedSettings
     from onboarding import WifiOnboarding
     from renderer import RawSink, RamPngSink, Rgb332Sink, UnsupportedFirmware
     from state_store import StateError, StateStore
@@ -44,6 +48,10 @@ _white = None
 _accent = None
 _setup_hold_since = None
 _setup_triggered = False
+_hosted = None
+_clock = None
+_ssl_module = None
+_boot = None
 
 
 def _configure_display_rotation():
@@ -116,7 +124,10 @@ def _start_playback():
         return
     gc.collect()
     print("Underhive RAM: before display", gc.mem_free())
-    if config.FRAME_FORMAT == "rgba":
+    if _hosted is not None and _hosted.enabled:
+        import vfs
+        _sink = RamPngSink(screen, vfs, gc.mem_free())
+    elif config.FRAME_FORMAT == "rgba":
         _sink = RawSink(screen)
     elif config.FRAME_FORMAT in ("png", "rgb332"):
         import vfs
@@ -124,11 +135,22 @@ def _start_playback():
         _sink = sink_type(screen, vfs, gc.mem_free())
     else:
         raise ValueError("unsupported configured format")
-    _transport = Transport(
-        _sink, config.SERVER_URL, config.DEVICE_TOKEN, config.DEVICE_ID,
-        _socket_module, _select_module, time.ticks_diff, time.ticks_add,
-        config.TARGET_FPS
-    )
+    if _hosted is not None and _hosted.enabled:
+        try:
+            from .hosted_client import HostedClient
+        except ImportError:
+            from hosted_client import HostedClient
+        _transport = HostedClient(
+            _sink, _hosted.state, _clock, _socket_module, _ssl_module,
+            time.ticks_diff, time.ticks_add, _boot, "MonaOS-4.03",
+            getattr(config, "TARGET_FPS", 8),
+        )
+    else:
+        _transport = Transport(
+            _sink, config.SERVER_URL, config.DEVICE_TOKEN, config.DEVICE_ID,
+            _socket_module, _select_module, time.ticks_diff, time.ticks_add,
+            config.TARGET_FPS
+        )
     print("Underhive RAM: after transport", gc.mem_free())
     _wlan.active(True)
 
@@ -235,6 +257,7 @@ def init():
     global _notice_started, _wifi_state, _wifi_errors
     global _profiles, _onboarding, _factory_credentials
     global _socket_module, _select_module, _setup_hold_since, _setup_triggered
+    global _hosted, _clock, _ssl_module, _boot
     _last_notice = None
     _notice_started = time.ticks_ms()
     _wifi_state = "Connecting Wi-Fi"
@@ -257,14 +280,32 @@ def init():
             getattr(network, "STAT_WRONG_PASSWORD", -3): "Wi-Fi password rejected",
             getattr(network, "STAT_CONNECT_FAIL", -1): "Wi-Fi connection failed",
         }
-        # Validate credentials/config before reserving graphics RAM.
-        try:
-            from .protocol import validate_config
-        except ImportError:
-            from protocol import validate_config
-        validate_config(config.SERVER_URL, config.DEVICE_TOKEN, config.DEVICE_ID)
+        store = StateStore()
+        _hosted = HostedSettings(store)
+        _hosted.load()
+        if _hosted.enabled:
+            import machine
+            import ssl
+            try:
+                from .trusted_time import TrustedClock
+            except ImportError:
+                from trusted_time import TrustedClock
+            _ssl_module = ssl
+            _clock = TrustedClock(store, time, machine.RTC())
+            _clock.load()
+            _clock.bootstrap()
+            _boot = binascii.hexlify(os.urandom(8)).decode()
+        else:
+            # Validate local credentials before reserving graphics RAM.
+            try:
+                from .protocol import validate_config
+            except ImportError:
+                from protocol import validate_config
+            validate_config(
+                config.SERVER_URL, config.DEVICE_TOKEN, config.DEVICE_ID
+            )
         _factory_credentials = _wifi_credentials()
-        _profiles = WifiProfiles(StateStore())
+        _profiles = WifiProfiles(store)
         try:
             _profiles.load()
         except StateError as error:

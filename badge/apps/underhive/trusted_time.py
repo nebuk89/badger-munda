@@ -38,6 +38,7 @@ class TrustedClock:
         self.time = time_module
         self.rtc = rtc
         self.state = empty_trusted_time_state()
+        self.persisted_seconds = None
 
     def load(self):
         self.state = self.store.load(
@@ -45,6 +46,7 @@ class TrustedClock:
             validate_trusted_time_state,
             empty_trusted_time_state(),
         )
+        self.persisted_seconds = self.state.get("unixSeconds")
         return self.state
 
     def _set_rtc(self, seconds):
@@ -85,4 +87,19 @@ class TrustedClock:
         self.state = self.store.save(
             TRUSTED_TIME_FILE, updated, validate_trusted_time_state
         )
+        self.persisted_seconds = seconds
+        return self.state
+
+    def observe(self, seconds, persist_interval=24 * 60 * 60):
+        """Accept verified UTC, but limit trusted-time flash writes."""
+        if (type(seconds) is not int
+                or not MIN_TRUSTED_UNIX <= seconds <= MAX_TRUSTED_UNIX):
+            raise TrustedTimeError("invalid verified time")
+        current = self.state.get("unixSeconds")
+        if current is not None and seconds < current:
+            raise TrustedTimeError("verified time moved backwards")
+        persisted = self.persisted_seconds
+        if persisted is None or seconds - persisted >= persist_interval:
+            return self.advance(seconds)
+        self.state = {"schema": STATE_SCHEMA, "unixSeconds": seconds}
         return self.state

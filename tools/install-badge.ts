@@ -70,7 +70,9 @@ if (mode === 'local') {
 const source = path.join(root, 'badge', 'apps', 'underhive')
 const modules = [
   'defaults.py',
+  'hosted_client.py',
   'hosted_config.py',
+  'hosted_protocol.py',
   'hosted_transport.py',
   'onboarding.py',
   'protocol.py',

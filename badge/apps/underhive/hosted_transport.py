@@ -16,6 +16,10 @@ class HostedTransportError(OSError):
     pass
 
 
+MAX_HTTPS_HEADER = 2048
+READ_CHUNK = 4096
+
+
 def redact_secret(value, secret):
     text = str(value)
     if isinstance(secret, str) and secret:
@@ -56,6 +60,20 @@ def build_request(settings, method, path, body=b""):
         "Connection: close\r\n\r\n"
     ) % (method, path, authority, authorization, len(body))
     return headers.encode() + bytes(body)
+
+
+def build_blob_request(authority, path):
+    if (not isinstance(authority, str) or not authority
+            or any(char in authority for char in "\r\n /@:")
+            or not isinstance(path, str) or not path.startswith("/")
+            or any(char in path for char in "\r\n ?#")):
+        raise ValueError("invalid Blob request")
+    return (
+        "GET %s HTTP/1.1\r\n"
+        "Host: %s\r\n"
+        "Accept-Encoding: identity\r\n"
+        "Connection: close\r\n\r\n"
+    ) % (path, authority)
 
 
 class VerifiedHttps:
@@ -113,3 +131,102 @@ class VerifiedHttps:
             if raw is not None:
                 raw.close()
             raise HostedTransportError("verified HTTPS failed") from None
+
+
+class HttpsBody:
+    """Exact-length response body with bounded socket reads."""
+
+    def __init__(self, socket, length, initial=b""):
+        self.socket = socket
+        self.length = length
+        self.initial = initial
+        self.offset = 0
+        self.received = 0
+        if len(initial) > length:
+            raise HostedTransportError("HTTPS response overflow")
+
+    def read(self, count=READ_CHUNK):
+        if count <= 0 or self.received >= self.length:
+            return b""
+        count = min(count, READ_CHUNK, self.length - self.received)
+        if self.offset < len(self.initial):
+            end = min(len(self.initial), self.offset + count)
+            data = self.initial[self.offset:end]
+            self.offset = end
+        else:
+            read = getattr(self.socket, "read", None)
+            data = read(count) if callable(read) else self.socket.recv(count)
+            if data is None:
+                data = b""
+        if not data:
+            raise HostedTransportError("truncated HTTPS response")
+        self.received += len(data)
+        return data
+
+    def finish(self):
+        if self.received != self.length:
+            raise HostedTransportError("truncated HTTPS response")
+
+    def close(self):
+        self.socket.close()
+
+
+def _send_all(socket, request):
+    view = memoryview(request)
+    sent = 0
+    while sent < len(view):
+        count = socket.send(view[sent:])
+        if count is None or count <= 0:
+            raise HostedTransportError("HTTPS request failed")
+        sent += count
+
+
+def open_response(connection, request, maximum_length):
+    socket = connection.connect()
+    try:
+        _send_all(socket, request)
+        header = bytearray()
+        remainder = b""
+        while True:
+            read = getattr(socket, "read", None)
+            data = read(READ_CHUNK) if callable(read) else socket.recv(READ_CHUNK)
+            if not data:
+                raise HostedTransportError("truncated HTTPS headers")
+            header.extend(data)
+            marker = header.find(b"\r\n\r\n")
+            if marker >= 0:
+                if marker + 4 > MAX_HTTPS_HEADER:
+                    raise HostedTransportError("HTTPS headers too large")
+                remainder = bytes(header[marker + 4:])
+                del header[marker + 4:]
+                break
+            if len(header) > MAX_HTTPS_HEADER:
+                raise HostedTransportError("HTTPS headers too large")
+        lines = bytes(header).split(b"\r\n")
+        status = lines[0].split(b" ")
+        if (len(status) < 2 or status[0] not in (b"HTTP/1.0", b"HTTP/1.1")
+                or status[1] != b"200"):
+            raise HostedTransportError("HTTPS request rejected")
+        length = None
+        for line in lines[1:]:
+            if not line:
+                continue
+            parts = line.split(b":", 1)
+            if len(parts) != 2:
+                raise HostedTransportError("invalid HTTPS header")
+            name, value = parts[0].lower(), parts[1].strip()
+            if name == b"content-length":
+                if (length is not None or not value
+                        or any(char < 48 or char > 57 for char in value)):
+                    raise HostedTransportError("invalid HTTPS length")
+                length = int(value)
+            elif name == b"transfer-encoding":
+                raise HostedTransportError("chunked HTTPS unsupported")
+            elif name == b"content-encoding" and value.lower() != b"identity":
+                raise HostedTransportError("encoded HTTPS unsupported")
+        if length is None or not 1 <= length <= maximum_length:
+            raise HostedTransportError("invalid HTTPS length")
+        return HttpsBody(socket, length, remainder)
+    except Exception:
+        socket.close()
+        raise

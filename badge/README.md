@@ -156,10 +156,37 @@ Missing, corrupt, backwards, unsupported, or out-of-range time fails closed.
 If a badge stays offline across certificate rotation and loses RTC state, run
 hosted USB provisioning again to refresh the trusted lower bound.
 
-This layer does not start protocol 2 sync, parse its response, fetch Blob
-content, show claims, play hosted frames, or send receipts.
-It only supplies validated state, authenticated request bytes, strict TLS, and
-trusted-time primitives for those later layers.
+The hosted client sends protocol 2 sync reports to
+`https://badger-munda.vercel.app/api/device/sync`.
+It accepts only protocol version 2 and monotonic station state.
+It derives `catalog.json` from the immutable frame template and content hash.
+The origin must match `*.public.blob.vercel-storage.com`.
+The content path must match
+`/content/v1/<catalog-hash>/clips/<clip-id>/frames/{frame}.ubf`.
+
+The catalog parser reads at most 1,024 bytes from the response at one time.
+It hashes a compact token stream that matches the server catalog identity.
+It validates every clip and frame entry, but it retains only the active clip.
+The active clip can contain at most 256 frames.
+The current hosted package uses 64 frames per clip.
+
+Each frame request goes directly to the approved public Blob origin.
+The client checks the response length, catalog frame hash, frame ID, FPS,
+UBF1 header, PNG payload bound, and PNG structure before display.
+It never sends badge authorization to Blob.
+TLS, authorization, protocol, origin, catalog, and frame failures do not start
+an unverified or local fallback.
+
+The client uses 1/2/4/8/16/30-second retry delays.
+It keeps the last complete frame during temporary network failures.
+It rejects stale or conflicting revisions and fetches a new catalog after a
+content version or clip change.
+Wi-Fi setup closes the hosted client before it changes network state.
+An absent hosted state still selects the existing local Mac transport.
+
+This layer validates claim responses but does not show claim codes.
+It exposes a claim callback for a later UI layer.
+It does not send playback receipts.
 
 ## Memory and responsiveness
 
@@ -180,6 +207,13 @@ guardrail, **not a measured sufficiency guarantee**.
 
 RGBA mode has one retained 76,800-byte staging buffer plus the existing screen.
 Network fragments never paint partial raw frames.
+
+Hosted mode adds a 1,024-byte catalog read chunk, a 4,096-byte HTTPS read
+chunk, and the active frame IDs and SHA-256 hashes.
+The 256-frame cap bounds the retained catalog index.
+The built-in 64-frame clips retain 64 integers and 64 hashes.
+The client never retains a full catalog, clip, or contiguous frame payload in
+one Python bytearray. The RAM LittleFS sink remains the largest fixed allocation.
 
 Each app update performs at most two nonblocking 4 KiB socket reads. It uses a
 numeric IPv4 address to avoid unbounded DNS resolution, a 1.2-second inactivity
@@ -265,7 +299,8 @@ Hosted provisioning preserves an existing local `config.py` and all Wi-Fi
 state. It updates the shared app modules and CA file, then atomically replaces
 each hosted state file. It writes trusted time before hosted credentials.
 It removes stale hosted `.new` and `.bak` copies after replacement.
-It does not activate hosted playback in this foundation layer.
+The installed app selects hosted playback on its next start.
+Remove hosted state to select the existing local Mac mode.
 
 ### On-device Wi-Fi setup
 
