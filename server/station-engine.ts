@@ -1,5 +1,5 @@
-import type { Broadcast, Clip, Command } from '../shared/types.ts'
-import { gameEvents } from '../shared/game-events.ts'
+import type { Broadcast, Clip, Command } from '../shared/types.js'
+import { gameEvents } from '../shared/game-events.js'
 
 export interface EngineState extends Broadcast {
   anchor: number

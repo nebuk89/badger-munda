@@ -1,21 +1,21 @@
 import { randomUUID } from 'node:crypto'
 import type { PoolClient } from 'pg'
-import type { BadgeDevice, Broadcast, Clip, Command, StationState } from '../../shared/types.ts'
+import type { BadgeDevice, Broadcast, Clip, Command, StationState } from '../../shared/types.js'
 import {
   applyEngineCommand,
   broadcastFromEngine,
   createEngineState,
   materializeEngineState,
   type EngineState,
-} from '../station-engine.ts'
-import { controllerLibrary, type HostedCatalog } from './catalog.ts'
-import { keyedHash, randomToken, sha256 } from './crypto.ts'
+} from '../station-engine.js'
+import { controllerLibrary, type HostedCatalog } from './catalog.js'
+import { keyedHash, randomToken, sha256 } from './crypto.js'
 import {
   DeviceSyncStore,
   type DeviceSyncReport,
-} from './device-store.ts'
-import { hostedConfig } from './env.ts'
-import { hostedPool, transaction } from './db/client.ts'
+} from './device-store.js'
+import { hostedConfig } from './env.js'
+import { hostedPool, transaction } from './db/client.js'
 
 const STATION_ID = 'default'
 

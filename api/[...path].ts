@@ -1,5 +1,5 @@
 import type { Request, Response } from 'express'
-import { createHostedApp } from '../server/hosted/app.ts'
+import { createHostedApp } from '../server/hosted/app.js'
 
 const app = createHostedApp()
 

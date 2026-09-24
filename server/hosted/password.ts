@@ -1,5 +1,5 @@
 import { randomBytes, scrypt as scryptCallback } from 'node:crypto'
-import { equalText } from './crypto.ts'
+import { equalText } from './crypto.js'
 
 const N = 16384
 const r = 8
