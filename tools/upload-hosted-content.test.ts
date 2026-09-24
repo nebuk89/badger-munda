@@ -5,7 +5,47 @@ import path from 'node:path'
 import test from 'node:test'
 import { artworks } from './content-art.ts'
 import { packageHostedContent } from './package-hosted-content.ts'
-import { checkHostedPackage, uploadHostedContent } from './upload-hosted-content.ts'
+import {
+  checkHostedPackage,
+  resolveBlobAuthOptions,
+  uploadHostedContent,
+} from './upload-hosted-content.ts'
+
+test('hosted upload uses an explicit token before OIDC credentials', () => {
+  assert.deepEqual(resolveBlobAuthOptions('explicit-token', {
+    VERCEL_OIDC_TOKEN: 'oidc-token',
+    BLOB_STORE_ID: 'store-id',
+    BLOB_READ_WRITE_TOKEN: 'environment-token',
+  }), { token: 'explicit-token' })
+})
+
+test('hosted upload omits the token option for complete OIDC credentials', () => {
+  assert.deepEqual(resolveBlobAuthOptions(undefined, {
+    VERCEL_OIDC_TOKEN: 'oidc-token',
+    BLOB_STORE_ID: 'store-id',
+  }), {})
+})
+
+test('hosted upload ignores a protected token placeholder with OIDC credentials', () => {
+  assert.deepEqual(resolveBlobAuthOptions(undefined, {
+    VERCEL_OIDC_TOKEN: 'oidc-token',
+    BLOB_STORE_ID: 'store-id',
+    BLOB_READ_WRITE_TOKEN: '[SENSITIVE]',
+  }), {})
+})
+
+test('hosted upload uses the legacy environment token without OIDC credentials', () => {
+  assert.deepEqual(resolveBlobAuthOptions(undefined, {
+    BLOB_READ_WRITE_TOKEN: 'environment-token',
+  }), { token: 'environment-token' })
+})
+
+test('hosted upload rejects missing credentials', () => {
+  assert.throws(
+    () => resolveBlobAuthOptions(undefined, {}),
+    /BLOB_READ_WRITE_TOKEN is required unless --dry-run is set/,
+  )
+})
 
 test('hosted upload dry run checks every immutable package object without credentials', async () => {
   const directory = await mkdtemp(path.join(tmpdir(), 'underhive-upload-'))
