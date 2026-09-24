@@ -24,6 +24,7 @@
     "test": "tsx --test server/*.test.ts server/hosted/*.test.ts tools/*.test.ts",
     "test:ui": "playwright test",
     "test:ui:hosted": "playwright test -c playwright.hosted.config.ts",
+    "badge:soak": "python3 badge/hosted_soak.py --cycles 20000",
     "badge:install": "tsx tools/install-badge.ts",
     "lint": "oxlint",
     "preview": "vite preview"

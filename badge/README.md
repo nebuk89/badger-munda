@@ -178,15 +178,28 @@ TLS, authorization, protocol, origin, catalog, and frame failures do not start
 an unverified or local fallback.
 
 The client uses 1/2/4/8/16/30-second retry delays.
+It uses a bounded `Retry-After` value for hosted rate limits.
+Authentication failures use a 30-second retry delay.
 It keeps the last complete frame during temporary network failures.
 It rejects stale or conflicting revisions and fetches a new catalog after a
 content version or clip change.
 Wi-Fi setup closes the hosted client before it changes network state.
 An absent hosted state still selects the existing local Mac transport.
 
-This layer validates claim responses but does not show claim codes.
-It exposes a claim callback for a later UI layer.
-It does not send playback receipts.
+An unclaimed badge shows the six-digit claim code and a minute-second expiry.
+The client clears the code at expiry and immediately requests a new sync.
+The screen never shows the badge secret.
+After the launcher presents a complete frame, the next scheduled sync reports
+the station revision, command sequence, playback generation, and frame ID.
+The client keeps only the latest receipt and does not send a request per frame.
+Presence reports include the boot ID, `MonaOS-4.03`, known station revision,
+measured FPS, and one stable error code.
+
+Hosted playback handles restart, Wi-Fi loss, stale content, server backoff,
+paused stations, game-event interruption, and clip changes.
+It keeps the last complete frame during temporary failures.
+It clears only clip-specific catalog state after a clip change.
+HOME and Wi-Fi setup close the transport and abort pending frame work.
 
 ## Memory and responsiveness
 
@@ -413,6 +426,51 @@ Acceptance checklist:
    live hostname, and completes a handshake within the memory limit.
 8. Remove power long enough to reset RTC state. Prove that USB-seeded time
    restores certificate validation without NTP or an unverified TLS attempt.
+
+### Hosted layer acceptance
+
+Run the hardware-free soak test first:
+
+```sh
+npm run badge:soak
+```
+
+The command runs 20,000 deterministic update cycles.
+It checks claim expiry, receipt bounds, Wi-Fi loss, server backoff, stale state,
+pause, event clip changes, cleanup, and retained-memory growth.
+
+Use MonaOS v4.03 for the physical checks below.
+Do not flash firmware as part of these checks.
+
+1. Record free memory before display setup and after hosted transport setup.
+   Compare both values with the local PNG baseline.
+   Confirm that playback does not raise `memory_low` during a 30-minute run.
+2. Start hosted mode with the bundled GTS roots.
+   Confirm a verified handshake to the configured hostname.
+   Confirm that no unverified TLS path or NTP request occurs.
+3. Run one normal clip for 30 minutes.
+   Record the minimum, median, and maximum reported FPS.
+   Confirm that the badge keeps the latest complete frame if it misses a frame.
+4. Remove Wi-Fi for 60 seconds.
+   Restore Wi-Fi.
+   Confirm `wifi_unavailable`, bounded retries, automatic recovery, and no partial frame.
+5. Stop the hosted service long enough to reach the 30-second retry cap.
+   Start the service.
+   Confirm automatic recovery without a badge reset.
+6. Pause the station, dispatch a game event, replace it with another event,
+   then clear the event.
+   Confirm each clip switch starts the correct immutable content.
+   Confirm that the paused advert resumes at its saved position.
+7. Press HOME while the badge connects, downloads a frame, decodes PNG, and shows playback.
+   Confirm return to the stock launcher each time.
+   Confirm that the transport and RAM sink close without a credential log.
+8. Remove power long enough to lose RTC state.
+   Start hosted mode offline, then restore the network.
+   Confirm that the USB-seeded lower bound restores verified TLS.
+9. Compare the parent-owned backup from before installation with a new backup.
+   Confirm changes only in the approved app, menu, hosted state, trusted time, and Wi-Fi state files.
+10. Remove `hosted.v1.json` from a test copy.
+    Confirm that Underhive starts the existing local Mac mode with the same rotation and Wi-Fi setup behavior.
 
 Host validation:
 

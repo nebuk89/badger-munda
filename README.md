@@ -94,7 +94,8 @@ The second migration adds bounded presence, latest receipts, content versions, c
 
 An administrator can create, list, claim, rotate, and revoke badges.
 Claim codes contain six digits, work once, and expire after ten minutes.
-This layer stores and consumes claim rows, but it does not issue codes from badge runtime.
+An unclaimed badge shows its current code and expiry on the device.
+The screen clears an expired code and requests a new code.
 Secret rotation can overlap the old credential for no more than 24 hours.
 Rotation still needs USB reprovisioning.
 The server never sends a replacement secret to badge runtime.
@@ -114,7 +115,21 @@ The badge checks protocol versions, revisions, catalog identity, frame paths,
 frame IDs, hashes, UBF1 headers, response lengths, and PNG bounds.
 It rejects non-Vercel Blob origins and content paths outside the active catalog.
 The client supports at most 256 frames in one active clip to keep memory bounded.
-This layer does not show claim codes or send playback receipts.
+The client reports the last frame that the launcher presented.
+Each receipt includes the station revision, command sequence, playback generation, and frame ID.
+The client sends only the latest receipt during the next scheduled sync.
+It does not add a request for each frame.
+
+Installed hosted state selects hosted mode.
+An absent hosted state still selects the existing local Mac transport.
+HOME closes the active transport and returns control to the stock launcher.
+Hold A+C for three seconds to close playback and start Wi-Fi setup.
+Press B to cancel Wi-Fi setup.
+The hosted client retains the last complete frame during Wi-Fi loss and bounded retry delays.
+It resets clip-specific state after an event or clip switch, and it keeps station revisions monotonic.
+Paused stations use the server position without advancing the clip clock.
+Screen errors use stable codes and bounded retry times.
+Logs and diagnostics do not include badge credentials, Wi-Fi passwords, authorization headers, or server error bodies.
 
 | Endpoint | Purpose | Authentication |
 |---|---|---|
@@ -411,6 +426,7 @@ npm run build
 npm run lint
 npm run content:hosted
 npm run content:upload:check
+npm run badge:soak
 python3 -m unittest discover -s device -p 'test_*.py'
 python3 -m unittest discover -s badge/tests -p 'test_*.py'
 npm run test:ui

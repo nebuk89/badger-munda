@@ -56,6 +56,7 @@ jobs:
         run: |
           python -m unittest discover -s badge/tests -p 'test_*.py'
           python -m unittest discover -s device -p 'test_*.py'
+          python badge/hosted_soak.py --cycles 5000
 
       - name: Build the controller and check TypeScript
         run: pnpm run build

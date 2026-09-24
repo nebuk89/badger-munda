@@ -52,6 +52,7 @@ _hosted = None
 _clock = None
 _ssl_module = None
 _boot = None
+_claim = None
 
 
 def _configure_display_rotation():
@@ -97,14 +98,14 @@ def _wifi_credentials():
         sys.path.pop(0)
 
 
-def _show_notice(message):
+def _show_notice(message, detail=None):
     global _last_notice, _notice_started
     now = time.ticks_ms()
     if _notice_started is None:
         _notice_started = now
     elapsed = max(0, time.ticks_diff(now, _notice_started))
     phase = (elapsed // 350) % 4
-    stamp = (message, phase, elapsed // 1000)
+    stamp = (message, detail, phase, elapsed // 1000)
     if stamp == _last_notice:
         return
     _last_notice = stamp
@@ -114,8 +115,42 @@ def _show_notice(message):
     screen.text("UNDERHIVE" + "." * phase, 8, 12)
     screen.brush = _white
     screen.text(message, 8, 42)
-    screen.text("%ds elapsed" % (elapsed // 1000), 8, 66)
+    screen.text(detail or "%ds elapsed" % (elapsed // 1000), 8, 66)
     screen.text("HOME: return to menu", 8, 99)
+
+
+def _hosted_claim_changed(claim):
+    global _claim, _last_notice
+    _claim = claim
+    _last_notice = None
+
+
+def _show_claim():
+    global _last_notice
+    if _claim is None or _transport is None:
+        return False
+    seconds = _transport.claim_seconds()
+    if seconds is None:
+        return False
+    retry = _transport.retry_seconds(time.ticks_ms())
+    detail = "Enter in hosted app"
+    if retry is not None and _transport.error_code is not None:
+        detail = "%s; retry %ds" % (_transport.error_code, retry)
+    minutes, remainder = divmod(seconds, 60)
+    stamp = (_claim["code"], seconds, detail)
+    if stamp == _last_notice:
+        return True
+    _last_notice = stamp
+    screen.brush = _black
+    screen.clear()
+    screen.brush = _accent
+    screen.text("CLAIM UNDERHIVE", 8, 8)
+    screen.brush = _white
+    screen.text("Code: " + _claim["code"], 20, 37)
+    screen.text("Expires in %d:%02d" % (minutes, remainder), 20, 61)
+    screen.text(detail, 8, 82)
+    screen.text("HOME: return to menu", 8, 103)
+    return True
 
 
 def _start_playback():
@@ -143,7 +178,7 @@ def _start_playback():
         _transport = HostedClient(
             _sink, _hosted.state, _clock, _socket_module, _ssl_module,
             time.ticks_diff, time.ticks_add, _boot, "MonaOS-4.03",
-            getattr(config, "TARGET_FPS", 8),
+            getattr(config, "TARGET_FPS", 8), _hosted_claim_changed,
         )
     else:
         _transport = Transport(
@@ -257,7 +292,7 @@ def init():
     global _notice_started, _wifi_state, _wifi_errors
     global _profiles, _onboarding, _factory_credentials
     global _socket_module, _select_module, _setup_hold_since, _setup_triggered
-    global _hosted, _clock, _ssl_module, _boot
+    global _hosted, _clock, _ssl_module, _boot, _claim
     _last_notice = None
     _notice_started = time.ticks_ms()
     _wifi_state = "Connecting Wi-Fi"
@@ -268,6 +303,7 @@ def init():
     _accent = brushes.color(220, 250, 85)
     _setup_hold_since = None
     _setup_triggered = False
+    _claim = None
     try:
         _configure_display_rotation()
         import network
@@ -399,17 +435,26 @@ def update():
     _transport.update(now, connected)
     if not connected:
         _show_notice(_wifi_state)
+    elif _show_claim():
+        return
     elif _transport.status not in ("Live", "Paused"):
-        _show_notice(_transport.status)
+        retry = _transport.retry_seconds(now)
+        detail = None
+        if retry is not None and _transport.error_code is not None:
+            detail = "%s; retry %ds" % (_transport.error_code, retry)
+        elif _transport.error_code is not None:
+            detail = "Code: " + _transport.error_code
+        _show_notice(_transport.status, detail)
     else:
         _last_notice = None
 
 
 def on_exit():
-    global _credentials
+    global _credentials, _claim
     # The stock HOME IRQ invokes this before resetting; do not disconnect a
     # shared Wi-Fi connection, sleep, retry, or write persistent state here.
     if _onboarding is not None:
         _onboarding.close()
     _stop_playback()
     _credentials = None
+    _claim = None

@@ -523,6 +523,121 @@ class AppImportTests(unittest.TestCase):
         module._show_notice("Joining Wi-Fi")
         self.assertIn("1s elapsed", labels)
 
+    def test_claim_screen_shows_only_the_code_expiry_and_safe_instructions(self):
+        module = self.load_app()
+        labels = []
+        module.screen = types.SimpleNamespace(
+            clear=lambda: None, text=lambda text, *_: labels.append(text),
+        )
+        module._black = "black"
+        module._white = "white"
+        module._accent = "accent"
+        module._last_notice = None
+        module._claim = {
+            "code": "123456",
+            "expiresAtMs": 1_790_266_200_000,
+        }
+        module.time = types.SimpleNamespace(ticks_ms=lambda: 0)
+        module._transport = types.SimpleNamespace(
+            claim_seconds=lambda: 125,
+            retry_seconds=lambda now: None,
+            error_code=None,
+        )
+        self.assertTrue(module._show_claim())
+        self.assertIn("Code: 123456", labels)
+        self.assertIn("Expires in 2:05", labels)
+        self.assertIn("HOME: return to menu", labels)
+        self.assertNotIn("badge-secret", " ".join(labels))
+
+    def test_claim_screen_keeps_the_code_and_shows_a_safe_retry_state(self):
+        module = self.load_app()
+        labels = []
+        module.screen = types.SimpleNamespace(
+            clear=lambda: None, text=lambda text, *_: labels.append(text),
+        )
+        module.time = types.SimpleNamespace(ticks_ms=lambda: 1000)
+        module._black = "black"
+        module._white = "white"
+        module._accent = "accent"
+        module._last_notice = None
+        module._claim = {"code": "123456", "expiresAtMs": 1}
+        module._transport = types.SimpleNamespace(
+            claim_seconds=lambda: 45,
+            retry_seconds=lambda now: 17,
+            error_code="network_failed",
+        )
+        self.assertTrue(module._show_claim())
+        self.assertIn("Code: 123456", labels)
+        self.assertIn("network_failed; retry 17s", labels)
+
+    def test_runtime_selects_hosted_or_local_transport_from_installed_state(self):
+        module = self.load_app()
+        events = []
+
+        class Sink:
+            def close(self):
+                events.append("sink-close")
+
+        class Hosted:
+            def __init__(self, *args):
+                events.append(("hosted", args[-1]))
+
+            def close(self):
+                events.append("hosted-close")
+
+        class Local:
+            def __init__(self, *args):
+                events.append("local")
+
+            def close(self):
+                events.append("local-close")
+
+        module.gc = types.SimpleNamespace(
+            collect=lambda: None, mem_free=lambda: 100000
+        )
+        module.time = types.SimpleNamespace(
+            ticks_diff=lambda a, b: a - b, ticks_add=lambda a, b: a + b
+        )
+        module.RamPngSink = lambda *args: Sink()
+        module._clock = object()
+        module._socket_module = object()
+        module._ssl_module = object()
+        module._boot = "boot-id"
+        module._wlan = types.SimpleNamespace(active=lambda value: None)
+        module.config = types.SimpleNamespace(
+            FRAME_FORMAT="png", TARGET_FPS=8,
+            SERVER_URL="http://192.168.1.2:8787",
+            DEVICE_TOKEN="x" * 32, DEVICE_ID="desk-badge",
+        )
+        module.Transport = Local
+        with patch.dict(sys.modules, {
+            "vfs": types.SimpleNamespace(),
+            "hosted_client": types.SimpleNamespace(HostedClient=Hosted),
+        }):
+            module._hosted = types.SimpleNamespace(
+                enabled=True, state={"mode": "hosted"}
+            )
+            module._start_playback()
+            self.assertEqual(events[0][0], "hosted")
+            self.assertIs(events[0][1], module._hosted_claim_changed)
+            module._stop_playback()
+            module._hosted = types.SimpleNamespace(
+                enabled=False, state={"mode": "local"}
+            )
+            module._start_playback()
+            self.assertEqual(events[-1], "local")
+
+    def test_notice_can_show_a_stable_error_and_retry_without_secrets(self):
+        module = self.load_app()
+        labels = []
+        module.screen.text = lambda text, *_: labels.append(text)
+        module.time = types.SimpleNamespace(
+            ticks_ms=lambda: 0, ticks_diff=lambda a, b: a - b
+        )
+        module._show_notice("Hosted station busy", "server_backoff; retry 17s")
+        self.assertIn("server_backoff; retry 17s", labels)
+        self.assertNotIn("Authorization", " ".join(labels))
+
     def test_join_receives_thirty_seconds_and_names_failure(self):
         module = self.load_app()
         calls = []

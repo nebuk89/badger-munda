@@ -145,7 +145,8 @@ class FakeSink:
 class FakeClock:
     def __init__(self):
         self.values = []
-        self.time = types.SimpleNamespace(time=lambda: 1_790_265_600)
+        self.current = 1_790_265_600
+        self.time = types.SimpleNamespace(time=lambda: self.current)
 
     def bootstrap(self):
         return 1_790_265_600
@@ -310,7 +311,12 @@ class HostedPlaybackTests(unittest.TestCase):
         hosted._blob_response = lambda url, maximum: response
         hosted._load_frame(0)
         self.assertEqual(hosted.sink.commits, 1)
-        self.assertEqual(hosted.pending, 7)
+        self.assertEqual(hosted.pending, {
+            "stationRevision": 1,
+            "commandSeq": 1,
+            "playbackGeneration": 1,
+            "frameId": 7,
+        })
         self.assertTrue(response.closed)
 
         hosted._blob_response = lambda url, maximum: FakeBody(
@@ -318,6 +324,133 @@ class HostedPlaybackTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(HostedProtocolError, "metadata"):
             hosted._load_frame(0)
+        self.assertGreaterEqual(hosted.sink.aborts, 1)
+
+    def test_presented_frame_adds_one_bounded_receipt_to_later_syncs(self):
+        hosted = client()
+        hosted.last_revision = 12
+        hosted.pending = {
+            "stationRevision": 12,
+            "commandSeq": 8,
+            "playbackGeneration": 4,
+            "frameId": 257,
+        }
+        hosted.confirm_presented(2000)
+        report = json.loads(hosted._report())
+        self.assertEqual(report, {
+            "protocol": 2,
+            "bootId": "boot-id-1234",
+            "firmwareVersion": "MonaOS-4.03",
+            "knownStationRevision": 12,
+            "lastReceipt": {
+                "stationRevision": 12,
+                "commandSeq": 8,
+                "playbackGeneration": 4,
+                "frameId": 257,
+            },
+            "fps": 0.0,
+            "errorCode": None,
+        })
+        self.assertLess(len(hosted._report()), 512)
+
+    def test_claim_expiry_clears_the_code_and_requests_a_fresh_sync(self):
+        claims = []
+        hosted = HostedClient(
+            FakeSink(), hosted_state(), FakeClock(), object(), object(),
+            lambda a, b: a - b, lambda a, b: a + b,
+            "boot-id-1234", "MonaOS-4.03", claim_handler=claims.append,
+        )
+        value = {
+            "protocol": 2,
+            "mode": "claim",
+            "serverTimeMs": 1_790_265_600_000,
+            "syncAfterMs": 3000,
+            "claimCode": "123456",
+            "claimExpiresAtMs": 1_790_265_605_000,
+        }
+        hosted._service_response = lambda body: FakeBody(json.dumps(value).encode())
+        hosted._sync(0)
+        self.assertEqual(hosted.claim_seconds(), 5)
+        self.assertEqual(claims[-1]["code"], "123456")
+        hosted.clock.current += 5
+        hosted._service_response = lambda body: (_ for _ in ()).throw(
+            HostedTransportError("offline")
+        )
+        hosted.update(5000)
+        self.assertIsNone(hosted.claim)
+        self.assertIsNone(claims[-1])
+        self.assertEqual(hosted.error_code, "network_failed")
+
+    def test_wifi_loss_keeps_the_last_frame_and_reports_a_stable_error(self):
+        hosted = client()
+        hosted.last_applied = 44
+        hosted.update(1000, connected=False)
+        self.assertEqual(hosted.last_applied, 44)
+        self.assertEqual(hosted.status, "Waiting for Wi-Fi")
+        self.assertEqual(hosted.error_code, "wifi_unavailable")
+
+    def test_server_retry_after_and_auth_failures_override_fast_retries(self):
+        hosted = client()
+        hosted._fail(
+            1000,
+            HostedTransportError(
+                "HTTPS request rejected", status=429, retry_after_ms=17000
+            ),
+        )
+        self.assertEqual(hosted.error_code, "server_backoff")
+        self.assertEqual(hosted.due, 18000)
+        self.assertEqual(hosted.retry_seconds(2000), 16)
+        hosted._fail(
+            20000,
+            HostedTransportError("HTTPS request rejected", status=401),
+        )
+        self.assertEqual(hosted.error_code, "auth_failed")
+        self.assertEqual(hosted.due, 50000)
+
+    def test_paused_timing_and_clip_switch_reset_only_clip_specific_state(self):
+        hosted = client()
+        paused = sync_value(revision=3)
+        paused["paused"] = True
+        paused["clip"]["positionMs"] = 1375
+        hosted.plan = paused
+        self.assertEqual(hosted._frame_index(), 1)
+        hosted.catalog = {"old": True}
+        hosted.last_frame_index = 1
+        event = sync_value(revision=4)
+        event["commandSeq"] = 4
+        event["playbackGeneration"] = 4
+        event["clip"]["id"] = "event-clip"
+        event["clip"]["frameUrlTemplate"] = (
+            BLOB + "/content/v1/" + event["contentVersion"]
+            + "/clips/event-clip/frames/{frame}.ubf"
+        )
+        hosted._service_response = lambda body: FakeBody(json.dumps(event).encode())
+        hosted.last_revision = 3
+        hosted.last_signature = (
+            3, 3, paused["contentVersion"], paused["clip"]["id"],
+            paused["paused"], paused["clip"]["durationMs"],
+            paused["clip"]["fps"], paused["clip"]["frameCount"],
+        )
+        hosted._sync(2000)
+        self.assertEqual(hosted.plan["clip"]["id"], "event-clip")
+        self.assertIsNone(hosted.catalog)
+        self.assertIsNone(hosted.last_frame_index)
+        self.assertEqual(hosted.last_revision, 4)
+
+    def test_close_clears_claim_pending_work_and_aborts_the_sink(self):
+        claims = []
+        hosted = HostedClient(
+            FakeSink(), hosted_state(), FakeClock(), object(), object(),
+            lambda a, b: a - b, lambda a, b: a + b,
+            "boot-id-1234", "MonaOS-4.03", claim_handler=claims.append,
+        )
+        hosted.claim = {"code": "123456", "expiresAtMs": 1_790_265_605_000}
+        hosted.pending = {"frameId": 9}
+        hosted.close()
+        self.assertTrue(hosted.closed)
+        self.assertIsNone(hosted.claim)
+        self.assertIsNone(hosted.pending)
+        self.assertIsNone(claims[-1])
         self.assertGreaterEqual(hosted.sink.aborts, 1)
 
     def test_local_transport_configuration_remains_accepted(self):

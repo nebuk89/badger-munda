@@ -319,6 +319,21 @@ class HttpsResponseTests(unittest.TestCase):
                 open_response(connection, b"GET / HTTP/1.1\r\n\r\n", 8)
             self.assertTrue(socket.closed)
 
+    def test_retry_after_is_bounded_and_error_bodies_are_not_exposed(self):
+        socket = self.Socket(
+            b"HTTP/1.1 429 Too Many Requests\r\n"
+            b"Retry-After: 17\r\n"
+            b"Content-Length: 18\r\n\r\n"
+            b"database-password"
+        )
+        connection = types.SimpleNamespace(connect=lambda: socket)
+        with self.assertRaises(HostedTransportError) as raised:
+            open_response(connection, b"POST /api/device/sync HTTP/1.1\r\n\r\n", 8192)
+        self.assertEqual(raised.exception.status, 429)
+        self.assertEqual(raised.exception.retry_after_ms, 17000)
+        self.assertNotIn("database-password", str(raised.exception))
+        self.assertTrue(socket.closed)
+
 
 if __name__ == "__main__":
     unittest.main()

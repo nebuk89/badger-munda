@@ -66,6 +66,8 @@ class HostedClient:
         self.last_frame_index = None
         self.pending = None
         self.last_applied = None
+        self.last_receipt = None
+        self.claim = None
         self.fps = 0.0
         self.fps_start = None
         self.fps_frames = 0
@@ -119,6 +121,8 @@ class HostedClient:
         }
         if self.last_revision is not None:
             report["knownStationRevision"] = self.last_revision
+        if self.last_receipt is not None:
+            report["lastReceipt"] = self.last_receipt
         return json.dumps(report).encode()
 
     def _sync(self, now):
@@ -132,12 +136,17 @@ class HostedClient:
             self.location = None
             self.last_frame_index = None
             self.status = "Badge not claimed"
+            self.claim = {
+                "code": result["claimCode"],
+                "expiresAtMs": result["claimExpiresAtMs"],
+            }
             if self.claim_handler is not None:
-                self.claim_handler({
-                    "code": result["claimCode"],
-                    "expiresAtMs": result["claimExpiresAtMs"],
-                })
+                self.claim_handler(self.claim)
             return
+        if self.claim is not None:
+            self.claim = None
+            if self.claim_handler is not None:
+                self.claim_handler(None)
         revision = result["stationRevision"]
         signature = (
             result["commandSeq"], result["playbackGeneration"],
@@ -236,7 +245,12 @@ class HostedClient:
             raise
         finally:
             response.close()
-        self.pending = expected_id
+        self.pending = {
+            "stationRevision": self.plan["stationRevision"],
+            "commandSeq": self.plan["commandSeq"],
+            "playbackGeneration": self.plan["playbackGeneration"],
+            "frameId": expected_id,
+        }
         self.last_frame_index = index
         self.status = "Paused" if self.plan["paused"] else "Live"
 
@@ -245,30 +259,77 @@ class HostedClient:
         self.failures = min(6, self.failures + 1)
         if isinstance(error, HostedProtocolError):
             self.status = "Hosted content rejected"
-            self.error_code = "validation_failed"
+            self.error_code = "protocol_invalid"
             self.plan = None
             self.catalog = None
             self.location = None
         elif isinstance(error, HostedTransportError):
+            if error.status in (401, 403):
+                self.status = "Badge credentials rejected"
+                self.error_code = "auth_failed"
+            elif error.status == 429:
+                self.status = "Hosted station busy"
+                self.error_code = "server_backoff"
+            else:
+                self.status = "Hosted station offline"
+                self.error_code = "network_failed"
+        elif isinstance(error, MemoryError):
+            self.status = "Not enough free RAM"
+            self.error_code = "memory_low"
+        elif isinstance(error, OSError):
             self.status = "Hosted station offline"
             self.error_code = "network_failed"
         else:
             self.status = "Hosted playback failed"
             self.error_code = "client_failed"
-        self.due = self.add(
-            now, min(30000, 1000 * (2 ** (self.failures - 1)))
+        delay = min(30000, 1000 * (2 ** (self.failures - 1)))
+        if isinstance(error, HostedTransportError):
+            if error.status in (401, 403):
+                delay = 30000
+            elif error.retry_after_ms is not None:
+                delay = error.retry_after_ms
+        self.due = self.add(now, delay)
+
+    def _expire_claim(self, now):
+        if self.claim is None:
+            return
+        current = int(self.clock.time.time() * 1000)
+        if current < self.claim["expiresAtMs"]:
+            return
+        self.claim = None
+        self.status = "Claim code expired"
+        self.error_code = "claim_expired"
+        self.sync_due = now
+        self.due = None
+        if self.claim_handler is not None:
+            self.claim_handler(None)
+
+    def claim_seconds(self):
+        if self.claim is None:
+            return None
+        remaining = self.claim["expiresAtMs"] - int(
+            self.clock.time.time() * 1000
         )
+        return max(0, (remaining + 999) // 1000)
+
+    def retry_seconds(self, now):
+        if self.due is None:
+            return None
+        remaining = self.diff(self.due, now)
+        return max(0, (remaining + 999) // 1000)
 
     def confirm_presented(self, now):
         if self.pending is None:
             return
-        frame_id = self.pending
+        receipt = self.pending
         self.pending = None
+        frame_id = receipt["frameId"]
         if frame_id != self.last_applied:
             if self.fps_start is None:
                 self.fps_start = now
             self.fps_frames += 1
         self.last_applied = frame_id
+        self.last_receipt = receipt
         elapsed = self.diff(now, self.fps_start) if self.fps_start is not None else 0
         if elapsed >= 2000:
             self.fps = self.fps_frames * 1000 / elapsed
@@ -278,8 +339,10 @@ class HostedClient:
     def update(self, now, connected=True):
         if self.closed:
             return
+        self._expire_claim(now)
         if not connected:
             self.status = "Waiting for Wi-Fi"
+            self.error_code = "wifi_unavailable"
             return
         if self.due is not None and self.diff(now, self.due) < 0:
             return
@@ -304,6 +367,10 @@ class HostedClient:
     def close(self):
         self.closed = True
         self.sink.abort()
+        if self.claim_handler is not None and self.claim is not None:
+            self.claim_handler(None)
+        self.claim = None
+        self.pending = None
         self.settings = None
         self.plan = None
         self.catalog = None

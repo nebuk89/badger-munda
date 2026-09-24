@@ -13,7 +13,10 @@ except ImportError:
 
 
 class HostedTransportError(OSError):
-    pass
+    def __init__(self, message, status=None, retry_after_ms=None):
+        super().__init__(message)
+        self.status = status
+        self.retry_after_ms = retry_after_ms
 
 
 MAX_HTTPS_HEADER = 2048
@@ -205,9 +208,12 @@ def open_response(connection, request, maximum_length):
         lines = bytes(header).split(b"\r\n")
         status = lines[0].split(b" ")
         if (len(status) < 2 or status[0] not in (b"HTTP/1.0", b"HTTP/1.1")
-                or status[1] != b"200"):
-            raise HostedTransportError("HTTPS request rejected")
+                or len(status[1]) != 3
+                or any(char < 48 or char > 57 for char in status[1])):
+            raise HostedTransportError("invalid HTTPS status")
+        status_code = int(status[1])
         length = None
+        retry_after_ms = None
         for line in lines[1:]:
             if not line:
                 continue
@@ -224,6 +230,14 @@ def open_response(connection, request, maximum_length):
                 raise HostedTransportError("chunked HTTPS unsupported")
             elif name == b"content-encoding" and value.lower() != b"identity":
                 raise HostedTransportError("encoded HTTPS unsupported")
+            elif name == b"retry-after":
+                if (not value or any(char < 48 or char > 57 for char in value)):
+                    raise HostedTransportError("invalid HTTPS retry")
+                retry_after_ms = min(60000, max(1000, int(value) * 1000))
+        if status_code != 200:
+            raise HostedTransportError(
+                "HTTPS request rejected", status_code, retry_after_ms
+            )
         if length is None or not 1 <= length <= maximum_length:
             raise HostedTransportError("invalid HTTPS length")
         return HttpsBody(socket, length, remainder)
