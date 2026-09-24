@@ -31,7 +31,8 @@ Do **not** infer support from today's Badgeware documentation:
   **not** be sufficient for these C stream callbacks.
 * The published [MonaOS v4.03 factory UF2](https://github.com/badger/home/releases/tag/mona-os-v4.03)
   was downloaded to the workstation for static inspection, not installed.
-  Its payload contains `VfsLfs2`, `mount`, `Image`, and `load_into` names.
+  Its payload contains `VfsLfs2`, `mount`, `Image`, `load_into`, `SSLContext`,
+  `CERT_REQUIRED`, `load_verify_locations`, and `ntptime` names.
   This corroborates availability; binary strings alone are not runtime proof.
 * Modern [PicoVector](https://github.com/pimoroni/picovector/blob/main/micropython/image.cpp)
   does register an image buffer slot and wraps caller-supplied buffers. This is
@@ -114,6 +115,52 @@ presents the display between app updates. This means “applied by software,” 
 independent optical confirmation of the panel. Network last-seen is separate.
 FPS counts newly presented sequence numbers, not duplicate polls.
 
+## Hosted HTTPS foundation
+
+Hosted configuration stays separate from Wi-Fi state:
+
+```json
+{
+  "schema": 1,
+  "mode": "hosted",
+  "serviceOrigin": "https://badger-munda.vercel.app",
+  "badgeId": "11111111-1111-4111-8111-111111111111",
+  "badgeSecret": "<43-character base64url secret>"
+}
+```
+
+The installer writes this format to `/state/underhive/hosted.v1.json`.
+An absent file selects local mode.
+The validator accepts only the exact hosted origin, a canonical UUID, and a
+32-byte base64url secret. It rejects paths, ports, credentials, IP addresses,
+other Vercel hosts, non-HTTPS schemes, extra fields, and header characters.
+
+`hosted_transport.py` forms `Authorization: Badge <badge-id>.<badge-secret>`.
+It provides bounded request construction for later protocol 2 sync.
+Errors use fixed messages, and the redaction helper removes the secret from
+diagnostic text. Current code does not log request bytes or exception details.
+
+`VerifiedHttps` uses `SSLContext`, `CERT_REQUIRED`, a CA file, and
+`server_hostname`. It has no unverified mode and no fallback path.
+The bundled CA file contains Google Trust Services Root R1 and R4 certificates
+from the [Google Trust Services repository](https://pki.goog/repository/).
+The live controller certificate used Root R1 during development.
+A CA change outside these roots needs an app update.
+
+TLS certificate checks need valid UTC. The installer writes a workstation UTC
+seed to `/state/underhive/trusted-time.v1.json`.
+`TrustedClock` sets an old or reset RTC to that saved lower bound before TLS.
+Only a later verified HTTPS response can advance this state in a later layer.
+The client does not use unauthenticated NTP to bypass certificate time checks.
+Missing, corrupt, backwards, unsupported, or out-of-range time fails closed.
+If a badge stays offline across certificate rotation and loses RTC state, run
+hosted USB provisioning again to refresh the trusted lower bound.
+
+This layer does not start protocol 2 sync, parse its response, fetch Blob
+content, show claims, play hosted frames, or send receipts.
+It only supplies validated state, authenticated request bytes, strict TLS, and
+trusted-time primitives for those later layers.
+
 ## Memory and responsiveness
 
 Default PNG mode uses **65,536 bytes** for LittleFS, split across sixteen
@@ -190,7 +237,7 @@ authoritative.
 ## Installation and Wi-Fi setup
 
 Start the Mac station before installation. Press RESET twice for USB Disk Mode.
-Run the installer from the repository root:
+Run the local installer from the repository root:
 
 ```sh
 npm run badge:install
@@ -202,6 +249,23 @@ It writes the app, device configuration, and paginated menu.
 New installations default to the upside-down tabletop orientation.
 Set `BADGE_ROTATION=0` when you run the installer for an upright badge.
 Eject BADGER safely before a normal RESET.
+
+For hosted foundation provisioning, use the badge UUID and the one-time secret:
+
+```sh
+BADGE_MODE=hosted \
+BADGE_ID="<badge UUID>" \
+BADGE_SECRET="<one-time 32-byte base64url secret>" \
+npm run badge:install
+```
+
+Do not put the secret on the command line as an argument.
+The environment value does not appear in installer output.
+Hosted provisioning preserves an existing local `config.py` and all Wi-Fi
+state. It updates the shared app modules and CA file, then atomically replaces
+each hosted state file. It writes trusted time before hosted credentials.
+It removes stale hosted `.new` and `.bak` copies after replacement.
+It does not activate hosted playback in this foundation layer.
 
 ### On-device Wi-Fi setup
 
@@ -237,8 +301,9 @@ State replacement uses a checked `.new` file and keeps the prior valid `.bak`
 copy. A corrupt primary file falls back to a valid candidate or backup. If no
 state copy is valid, Underhive keeps the `/system/secrets.py` fallback.
 
-The setup path does not change `SERVER_URL`, `DEVICE_TOKEN`, `DEVICE_ID`, the
-local Mac broadcaster, frame rendering, pairing cards, or programme behavior.
+The setup path does not change `SERVER_URL`, `DEVICE_TOKEN`, `DEVICE_ID`,
+`hosted.v1.json`, the local Mac broadcaster, frame rendering, pairing cards,
+or programme behavior.
 
 Prepare the serial tools once:
 
@@ -309,6 +374,10 @@ Acceptance checklist:
    provided by stock `main.py`; avoid assuming native decode is preemptible.
 6. Compare parent-owned before/after device backups to confirm flash changes are
    limited to the intentional one-time installation/configuration.
+7. On MonaOS v4.03, prove that `SSLContext` loads the bundled roots, checks the
+   live hostname, and completes a handshake within the memory limit.
+8. Remove power long enough to reset RTC state. Prove that USB-seeded time
+   restores certificate validation without NTP or an unverified TLS attempt.
 
 Host validation:
 

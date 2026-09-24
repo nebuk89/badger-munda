@@ -62,6 +62,22 @@ The service returns a device secret only after badge creation or administrator r
 Save it then, and use the safe USB installer to provision the badge ID, service URL, and secret.
 The service stores only keyed HMAC values for device secrets and claim codes.
 
+Provision the hosted foundation while the badge is in USB Disk Mode:
+
+```sh
+BADGE_MODE=hosted \
+BADGE_ID="<badge UUID>" \
+BADGE_SECRET="<one-time 32-byte base64url secret>" \
+npm run badge:install
+```
+
+The hosted service origin defaults to `https://badger-munda.vercel.app`.
+The installer rejects all other origins.
+It writes `/state/underhive/hosted.v1.json` and a separate trusted UTC seed.
+It does not put hosted credentials in Wi-Fi state, logs, or error text.
+It preserves an installed local `config.py`, Wi-Fi state, firmware, `main.py`, and unrelated files.
+This foundation does not start protocol 2 sync, Blob downloads, playback, claims, or receipts.
+
 Set these hosted environment variables in addition to the database and administrator settings:
 
 | Variable | Purpose |
@@ -81,7 +97,7 @@ This layer stores and consumes claim rows, but it does not issue codes from badg
 Secret rotation can overlap the old credential for no more than 24 hours.
 Rotation still needs USB reprovisioning.
 The server never sends a replacement secret to badge runtime.
-The badge sends `Authorization: Badge <badge-id>.<badge-secret>` to `POST /api/device/sync`.
+The protocol 2 client will send `Authorization: Badge <badge-id>.<badge-secret>` to `POST /api/device/sync`.
 The service checks a keyed HMAC value and accepts each active overlap credential until its expiry.
 Revoked badges and revoked credentials fail with the same invalid-credential response.
 
@@ -234,7 +250,8 @@ Uploaded videos use fixed decoder formats and cannot select arbitrary network pr
 The initial local setup uses HTTP, not HTTPS.
 Someone who can observe that network traffic can observe credentials and media.
 Do not expose port 8787 to the internet.
-A public deployment needs HTTPS and a separate deployment design.
+The hosted foundation uses strict HTTPS and separate badge credentials.
+The local bearer token never becomes a hosted credential.
 
 Pairing sessions expire after seven days or a server restart.
 The controller code and badge token survive a restart.
