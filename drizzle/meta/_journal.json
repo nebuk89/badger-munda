@@ -1,0 +1,27 @@
+{
+  "version": "7",
+  "dialect": "postgresql",
+  "entries": [
+    {
+      "idx": 0,
+      "version": "7",
+      "when": 1790183962000,
+      "tag": "0000_hosted_service",
+      "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1790184436000,
+      "tag": "0001_badge_registry",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1790185195000,
+      "tag": "0002_device_sync",
+      "breakpoints": true
+    }
+  ]
+}
