@@ -4,9 +4,10 @@ import { LoaderCircle, Radio, WifiOff } from 'lucide-react'
 interface BroadcastPreviewProps {
   enabled: boolean
   title: string
+  hosted?: boolean
 }
 
-export function BroadcastPreview({ enabled, title }: BroadcastPreviewProps) {
+export function BroadcastPreview({ enabled, title, hosted = false }: BroadcastPreviewProps) {
   const imageRef = useRef<HTMLImageElement>(null)
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
 
@@ -73,7 +74,7 @@ export function BroadcastPreview({ enabled, title }: BroadcastPreviewProps) {
         <div className="screen-message" role="status">
           {!enabled ? <WifiOff /> : status === 'error' ? <Radio /> : <LoaderCircle className="spin" />}
           <strong>{!enabled ? 'Preview offline' : status === 'error' ? 'Preview unavailable' : 'Tuning the signal'}</strong>
-          <span>{!enabled || status === 'error' ? 'Checking the Mac connection.' : 'Waiting for the first frame.'}</span>
+          <span>{hosted ? 'Media delivery comes in a later layer.' : !enabled || status === 'error' ? 'Checking the Mac connection.' : 'Waiting for the first frame.'}</span>
         </div>
       )}
     </div>

@@ -54,6 +54,54 @@ Vite forwards `/api` and `/media` to the server on port 8787.
 The production server serves the built phone interface itself.
 Restart `npm start` after a new production build.
 
+## Hosted badge registry and device sync
+
+The hosted controller uses one private administrator password.
+The registry gives each badge a UUID and a separate 32-byte device secret.
+The service returns a device secret only after badge creation or administrator rotation.
+Save it then, and use the safe USB installer to provision the badge ID, service URL, and secret.
+The service stores only keyed HMAC values for device secrets and claim codes.
+
+Set these hosted environment variables in addition to the database and administrator settings:
+
+| Variable | Purpose |
+|---|---|
+| `CLAIM_CODE_HMAC_KEY` | Key for six-digit claim-code HMAC values |
+| `DEVICE_SECRET_HMAC_KEY` | Key for badge-secret HMAC values |
+| `CONTENT_CATALOG_URL` | Immutable public `catalog.json` URL under `content/v1/<sha256>/` |
+| `CONTENT_BLOB_BASE_URL` | Allowlisted public Blob origin and path prefix |
+
+Use a different random value for each key.
+Run `npm run db:migrate` to apply `drizzle/0001_badge_registry.sql` and `drizzle/0002_device_sync.sql`.
+The second migration adds bounded presence, latest receipts, content versions, credential use, and durable device limits.
+
+An administrator can create, list, claim, rotate, and revoke badges.
+Claim codes contain six digits, work once, and expire after ten minutes.
+This layer stores and consumes claim rows, but it does not issue codes from badge runtime.
+Secret rotation can overlap the old credential for no more than 24 hours.
+Rotation still needs USB reprovisioning.
+The server never sends a replacement secret to badge runtime.
+The badge sends `Authorization: Badge <badge-id>.<badge-secret>` to `POST /api/device/sync`.
+The service checks a keyed HMAC value and accepts each active overlap credential until its expiry.
+Revoked badges and revoked credentials fail with the same invalid-credential response.
+
+Protocol 2 reports a boot ID, a firmware version, an optional known station revision, an optional last receipt, FPS, and a safe error code.
+An unclaimed badge receives one six-digit claim code with a ten-minute expiry.
+A claimed badge receives the server time, station and command revisions, playback generation, pause state, clip timing, FPS, frame count, and a public Blob `{frame}` URL template.
+The service stores one presence row and one latest receipt row for each badge.
+The badge fetches each immutable `UBF1` indexed-PNG frame from Blob.
+The Vercel Function does not proxy frames or send a long frame stream.
+
+| Endpoint | Purpose | Authentication |
+|---|---|---|
+| `GET /api/badges` | List badge identities and claim status | Administrator cookie |
+| `POST /api/badges` | Create a badge and show its secret once | Cookie and CSRF |
+| `POST /api/badges/claim` | Consume a six-digit claim code | Cookie and CSRF |
+| `POST /api/badges/:badgeId/rotate-secret` | Create a secret for USB reprovisioning | Cookie and CSRF |
+| `POST /api/badges/:badgeId/revoke` | Revoke a badge and its credentials | Cookie and CSRF |
+
+Do not put passwords, hashes, credentials, codes, or the database URL in URLs or logs.
+
 ## Content
 
 `npm run content` creates thirteen original Underhive adverts and notices, plus six game-event videos.
@@ -107,6 +155,30 @@ An eight-second advert has 64 frames at 8 FPS.
 These files are a rebuildable frame cache, separate from the sample MP4s.
 The repository excludes the cache, private settings, and device backups.
 Use `npm run content` for the game-event controls; normal uploads become custom clips, not game-event presets.
+
+### Package the built-in content
+
+`npm run content:hosted` packages the nineteen built-in clips for a hosted content store.
+The package contains 1,216 complete `UBF1` frames with indexed PNG payloads, plus the sample posters and videos.
+Each frame keeps a stable catalog-wide frame ID from 1 through 1,216.
+The command writes the package under `generated/hosted/content/v1/<catalog-hash>/`.
+The catalog hash depends only on the packaged content, so the same inputs make the same package.
+The repository excludes the generated package.
+
+Run a credentials-free package and upload check:
+
+```sh
+npm run content:hosted
+npm run content:upload:check
+```
+
+Set `BLOB_READ_WRITE_TOKEN` only when you publish the package.
+Then run `npm run content:upload`.
+The uploader uses public Blob objects, fixed content paths, no random suffix, no overwrite, and a one-year cache lifetime.
+It uploads `catalog.json`, complete `UBF1` indexed-PNG frames, posters, and MP4 previews.
+It rejects raw RGBA files, changed hashes, missing files, extra files, and unsupported file types.
+Set `CONTENT_CATALOG_URL` to the uploaded content-addressed catalog URL.
+Set `CONTENT_BLOB_BASE_URL` to its allowlisted public Blob root.
 
 ### Dispatch a game event
 
@@ -219,6 +291,8 @@ The controller disables those transport controls during game videos to avoid acc
 
 ## HTTP interface
 
+The local Mac station keeps the interface below.
+
 | Endpoint | Purpose | Authentication |
 |---|---|---|
 | `GET /api/setup` | Check whether this controller is paired | None |
@@ -257,6 +331,36 @@ Flag bit 0 marks paused playback. It stays clear while a game video plays over a
 The device reports a rendered frame through `X-Badge-Frame` on its next request.
 It can report measured speed through `X-Badge-Fps`.
 
+### Hosted device sync
+
+| Endpoint | Purpose | Authentication |
+|---|---|---|
+| `POST /api/device/sync` | Record presence and a receipt, then return claim or playback state | `Badge` authorization header |
+
+The service applies a durable limit of 180 sync requests for each badge in two minutes.
+The request body uses this shape:
+
+```json
+{
+  "protocol": 2,
+  "bootId": "boot-id-1234",
+  "firmwareVersion": "2.0.0",
+  "knownStationRevision": 12,
+  "lastReceipt": {
+    "stationRevision": 12,
+    "commandSeq": 8,
+    "playbackGeneration": 4,
+    "frameId": 257
+  },
+  "fps": 7.8,
+  "errorCode": null
+}
+```
+
+The server accepts only an immutable catalog URL under `content/v1/<sha256>/catalog.json`.
+All poster, preview, and frame paths must stay under that catalog directory and the allowlisted Blob root.
+The sync response never contains a badge secret, claim-code HMAC, controller token, or Blob write token.
+
 ## Checks
 
 GitHub Actions runs `.github/workflows/ci.yml` on pushes, pull requests, and manual runs.
@@ -268,6 +372,8 @@ The job generates its own sample frames and installs Chromium. It needs no badge
 npm test
 npm run build
 npm run lint
+npm run content:hosted
+npm run content:upload:check
 python3 -m unittest discover -s device -p 'test_*.py'
 python3 -m unittest discover -s badge/tests -p 'test_*.py'
 npm run test:ui
