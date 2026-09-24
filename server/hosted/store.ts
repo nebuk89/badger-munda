@@ -92,53 +92,55 @@ function engineFromRow(row: StationRow): EngineState {
   }
 }
 
-async function saveEngine(
+export async function saveEngine(
   client: PoolClient,
   state: EngineState,
   playbackGeneration: number,
   nextCommandSeq: number,
   now: number,
 ) {
+  const updatedAt = new Date(now)
   await client.query(
     `UPDATE stations
-       SET revision = $2, next_command_seq = $3, updated_at = to_timestamp($4 / 1000.0)
+       SET revision = $2, next_command_seq = $3, updated_at = $4::timestamptz
      WHERE id = $1`,
-    [STATION_ID, state.revision, nextCommandSeq, now],
+    [STATION_ID, state.revision, nextCommandSeq, updatedAt],
   )
   await client.query(
     `UPDATE broadcast_state
-       SET clip_id = $2, paused = $3, loop = $4, started_at = $5, anchor_time = $6,
+       SET clip_id = $2, paused = $3, loop = $4, started_at = $5::bigint, anchor_time = $6::bigint,
            position = $7, round = $8, event_json = $9, queue_json = $10,
-           playback_generation = $11, updated_at = to_timestamp($12 / 1000.0)
+           playback_generation = $11, updated_at = $12::timestamptz
      WHERE station_id = $1`,
     [
       STATION_ID, state.clipId, state.paused, state.loop, state.startedAt, state.anchor,
       state.position, state.round, state.event, JSON.stringify(state.queue),
-      playbackGeneration, now,
+      playbackGeneration, updatedAt,
     ],
   )
 }
 
-async function initializeStation(client: PoolClient, library: Clip[], now: number) {
+export async function initializeStation(client: PoolClient, library: Clip[], now: number) {
   const initial = createEngineState(library, now)
+  const timestamp = new Date(now)
   await client.query(
     `INSERT INTO stations (id, name, revision, next_command_seq, created_at, updated_at)
-     VALUES ($1, 'Underhive Broadcast', $2, 1, to_timestamp($3 / 1000.0), to_timestamp($3 / 1000.0))
+     VALUES ($1, 'Underhive Broadcast', $2, 1, $3::timestamptz, $3::timestamptz)
      ON CONFLICT (id) DO NOTHING`,
-    [STATION_ID, initial.revision, now],
+    [STATION_ID, initial.revision, timestamp],
   )
   await client.query(
     `INSERT INTO broadcast_state (
        station_id, clip_id, paused, loop, started_at, anchor_time, position, round,
        event_json, queue_json, playback_generation, updated_at
      )
-     VALUES ($1, $2, false, false, $3, $3, 0, 1, NULL, '[]'::jsonb, 1, to_timestamp($3 / 1000.0))
+     VALUES ($1, $2, false, false, $3::bigint, $3::bigint, 0, 1, NULL, '[]'::jsonb, 1, $4::timestamptz)
      ON CONFLICT (station_id) DO NOTHING`,
-    [STATION_ID, initial.clipId, now],
+    [STATION_ID, initial.clipId, now, timestamp],
   )
 }
 
-async function lockedStation(client: PoolClient, library: Clip[], now: number) {
+export async function lockedStation(client: PoolClient, library: Clip[], now: number) {
   await initializeStation(client, library, now)
   const result = await client.query<StationRow>(
     `SELECT s.revision, s.next_command_seq, b.clip_id, b.paused, b.loop, b.started_at,
@@ -184,13 +186,20 @@ export class HostedStore {
     const id = randomUUID()
     const token = randomToken()
     const csrf = keyedHash(hostedConfig().sessionPepper, `csrf:${token}`)
+    const timestamp = new Date(now)
     await hostedPool().query(
       `INSERT INTO admin_sessions (
          id, token_hash, csrf_hash, created_at, last_seen_at, idle_expires_at, absolute_expires_at
        )
-       VALUES ($1, $2, $3, to_timestamp($4 / 1000.0), to_timestamp($4 / 1000.0),
-               to_timestamp(($4 + $5) / 1000.0), to_timestamp(($4 + $6) / 1000.0))`,
-      [id, sha256(token), sha256(csrf), now, 12 * 60 * 60_000, 7 * 24 * 60 * 60_000],
+       VALUES ($1, $2, $3, $4::timestamptz, $4::timestamptz, $5::timestamptz, $6::timestamptz)`,
+      [
+        id,
+        sha256(token),
+        sha256(csrf),
+        timestamp,
+        new Date(now + 12 * 60 * 60_000),
+        new Date(now + 7 * 24 * 60 * 60_000),
+      ],
     )
     return { id, token, csrf, expiresAt: now + 7 * 24 * 60 * 60_000 }
   }
@@ -201,22 +210,28 @@ export class HostedStore {
 
   async session(token: string | undefined, now = Date.now()) {
     if (!token) return undefined
+    const timestamp = new Date(now)
     const result = await hostedPool().query<SessionRow>(
       `SELECT id, csrf_hash, idle_expires_at, absolute_expires_at
          FROM admin_sessions
         WHERE token_hash = $1 AND revoked_at IS NULL
-          AND idle_expires_at > to_timestamp($2 / 1000.0)
-          AND absolute_expires_at > to_timestamp($2 / 1000.0)`,
-      [sha256(token), now],
+          AND idle_expires_at > $2::timestamptz
+          AND absolute_expires_at > $2::timestamptz`,
+      [sha256(token), timestamp],
     )
     const session = result.rows[0]
     if (!session) return undefined
     await hostedPool().query(
       `UPDATE admin_sessions
-          SET last_seen_at = to_timestamp($2 / 1000.0),
-              idle_expires_at = LEAST(absolute_expires_at, to_timestamp(($2 + $3) / 1000.0))
-        WHERE id = $1 AND last_seen_at < to_timestamp(($2 - 60000) / 1000.0)`,
-      [session.id, now, 12 * 60 * 60_000],
+          SET last_seen_at = $2::timestamptz,
+              idle_expires_at = LEAST(absolute_expires_at, $3::timestamptz)
+        WHERE id = $1 AND last_seen_at < $4::timestamptz`,
+      [
+        session.id,
+        timestamp,
+        new Date(now + 12 * 60 * 60_000),
+        new Date(now - 60_000),
+      ],
     )
     return {
       id: session.id,
@@ -258,25 +273,28 @@ export class HostedStore {
     windowMs: number,
     now = Date.now(),
   ) {
+    const timestamp = new Date(now)
     await hostedPool().query(
       `INSERT INTO auth_rate_limits (scope, subject_hash, window_started_at, failures, blocked_until)
-       VALUES ($1, $2, to_timestamp($3 / 1000.0), 1, NULL)
+       VALUES ($1, $2, $3::timestamptz, 1, NULL)
        ON CONFLICT (scope, subject_hash) DO UPDATE SET
          failures = CASE
-           WHEN auth_rate_limits.window_started_at <= to_timestamp(($3 - $5) / 1000.0) THEN 1
+           WHEN auth_rate_limits.window_started_at <= $6::timestamptz THEN 1
            ELSE auth_rate_limits.failures + 1
          END,
          window_started_at = CASE
-           WHEN auth_rate_limits.window_started_at <= to_timestamp(($3 - $5) / 1000.0)
-             THEN to_timestamp($3 / 1000.0)
+           WHEN auth_rate_limits.window_started_at <= $6::timestamptz
+             THEN $3::timestamptz
            ELSE auth_rate_limits.window_started_at
          END,
          blocked_until = CASE
            WHEN auth_rate_limits.failures + 1 >= $4
-             THEN to_timestamp(($3 + LEAST($5, 1000 * power(2, LEAST(auth_rate_limits.failures, 10)))) / 1000.0)
+             THEN $3::timestamptz
+               + LEAST($5, 1000 * power(2, LEAST(auth_rate_limits.failures, 10)))
+                 * interval '1 millisecond'
            ELSE auth_rate_limits.blocked_until
          END`,
-      [scope, subjectHash, now, maxFailures, windowMs],
+      [scope, subjectHash, timestamp, maxFailures, windowMs, new Date(now - windowMs)],
     )
   }
 
@@ -293,8 +311,8 @@ export class HostedStore {
   ) {
     await hostedPool().query(
       `INSERT INTO audit_events (id, event_type, badge_id, session_id, detail_json, created_at)
-       VALUES ($1, $2, $3, $4, $5::jsonb, to_timestamp($6 / 1000.0))`,
-      [randomUUID(), eventType, badgeId ?? null, sessionId ?? null, JSON.stringify(detail), now],
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6::timestamptz)`,
+      [randomUUID(), eventType, badgeId ?? null, sessionId ?? null, JSON.stringify(detail), new Date(now)],
     )
   }
 
@@ -354,8 +372,8 @@ export class HostedStore {
            station_id, command_seq, request_id, fingerprint, action_json,
            resulting_revision, response_json, created_at
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7, to_timestamp($8 / 1000.0))`,
-        [STATION_ID, commandSeq, requestId, fingerprint, command, next.revision, response, now],
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8::timestamptz)`,
+        [STATION_ID, commandSeq, requestId, fingerprint, command, next.revision, response, new Date(now)],
       )
       return response
     })
@@ -407,16 +425,17 @@ export class HostedStore {
   async createBadge(label: string, now = Date.now()) {
     const badgeId = randomUUID()
     const badgeSecret = randomToken(32)
+    const timestamp = new Date(now)
     await transaction(async (client) => {
       await client.query(
         `INSERT INTO badges (id, label, created_at, updated_at)
-         VALUES ($1, $2, to_timestamp($3 / 1000.0), to_timestamp($3 / 1000.0))`,
-        [badgeId, label, now],
+         VALUES ($1, $2, $3::timestamptz, $3::timestamptz)`,
+        [badgeId, label, timestamp],
       )
       await client.query(
         `INSERT INTO badge_credentials (id, badge_id, secret_hmac, valid_from)
-         VALUES ($1, $2, $3, to_timestamp($4 / 1000.0))`,
-        [randomUUID(), badgeId, keyedHash(hostedConfig().deviceKey, badgeSecret), now],
+         VALUES ($1, $2, $3, $4::timestamptz)`,
+        [randomUUID(), badgeId, keyedHash(hostedConfig().deviceKey, badgeSecret), timestamp],
       )
     })
     return { badgeId, badgeSecret }
@@ -424,58 +443,60 @@ export class HostedStore {
 
   async claimBadge(code: string, now = Date.now()) {
     const codeHmac = keyedHash(hostedConfig().claimKey, code)
+    const timestamp = new Date(now)
     return transaction(async (client) => {
       const result = await client.query<{ id: string; badge_id: string }>(
         `SELECT c.id, c.badge_id
            FROM badge_claims c
            JOIN badges b ON b.id = c.badge_id
           WHERE c.code_hmac = $1 AND c.consumed_at IS NULL
-            AND c.expires_at > to_timestamp($2 / 1000.0)
+             AND c.expires_at > $2::timestamptz
             AND b.revoked_at IS NULL
           FOR UPDATE OF c, b`,
-        [codeHmac, now],
+        [codeHmac, timestamp],
       )
       const claim = result.rows[0]
       if (!claim) return undefined
       await client.query(
         `UPDATE badge_claims
-            SET consumed_at = to_timestamp($2 / 1000.0)
+            SET consumed_at = $2::timestamptz
           WHERE badge_id = $1 AND consumed_at IS NULL`,
-        [claim.badge_id, now],
+        [claim.badge_id, timestamp],
       )
       await client.query(
         `UPDATE badges
-            SET claimed_at = COALESCE(claimed_at, to_timestamp($2 / 1000.0)),
-                updated_at = to_timestamp($2 / 1000.0)
+            SET claimed_at = COALESCE(claimed_at, $2::timestamptz),
+                updated_at = $2::timestamptz
           WHERE id = $1`,
-        [claim.badge_id, now],
+        [claim.badge_id, timestamp],
       )
       return claim.badge_id
     })
   }
 
   async revokeBadge(badgeId: string, now = Date.now()) {
+    const timestamp = new Date(now)
     return transaction(async (client) => {
       const badge = await client.query(
         `UPDATE badges
-            SET revoked_at = COALESCE(revoked_at, to_timestamp($2 / 1000.0)),
-                updated_at = to_timestamp($2 / 1000.0)
+            SET revoked_at = COALESCE(revoked_at, $2::timestamptz),
+                updated_at = $2::timestamptz
           WHERE id = $1
           RETURNING id`,
-        [badgeId, now],
+        [badgeId, timestamp],
       )
       if (!badge.rowCount) return false
       await client.query(
         `UPDATE badge_credentials
-            SET revoked_at = COALESCE(revoked_at, to_timestamp($2 / 1000.0))
+            SET revoked_at = COALESCE(revoked_at, $2::timestamptz)
           WHERE badge_id = $1`,
-        [badgeId, now],
+        [badgeId, timestamp],
       )
       await client.query(
         `UPDATE badge_claims
-            SET consumed_at = COALESCE(consumed_at, to_timestamp($2 / 1000.0))
+            SET consumed_at = COALESCE(consumed_at, $2::timestamptz)
           WHERE badge_id = $1`,
-        [badgeId, now],
+        [badgeId, timestamp],
       )
       return true
     })
@@ -483,6 +504,8 @@ export class HostedStore {
 
   async rotateBadge(badgeId: string, now = Date.now()) {
     const badgeSecret = randomToken(32)
+    const timestamp = new Date(now)
+    const overlapEndsAt = new Date(now + 24 * 60 * 60_000)
     return transaction(async (client) => {
       const badge = await client.query(
         'SELECT 1 FROM badges WHERE id = $1 AND revoked_at IS NULL FOR UPDATE',
@@ -492,21 +515,21 @@ export class HostedStore {
       await client.query(
         `UPDATE badge_credentials
             SET valid_until = LEAST(
-              COALESCE(valid_until, to_timestamp(($2 + $3) / 1000.0)),
-              to_timestamp(($2 + $3) / 1000.0)
+              COALESCE(valid_until, $3::timestamptz),
+              $3::timestamptz
             )
           WHERE badge_id = $1 AND revoked_at IS NULL
-            AND (valid_until IS NULL OR valid_until > to_timestamp($2 / 1000.0))`,
-        [badgeId, now, 24 * 60 * 60_000],
+            AND (valid_until IS NULL OR valid_until > $2::timestamptz)`,
+        [badgeId, timestamp, overlapEndsAt],
       )
       await client.query(
         `INSERT INTO badge_credentials (id, badge_id, secret_hmac, valid_from)
-         VALUES ($1, $2, $3, to_timestamp($4 / 1000.0))`,
-        [randomUUID(), badgeId, keyedHash(hostedConfig().deviceKey, badgeSecret), now],
+         VALUES ($1, $2, $3, $4::timestamptz)`,
+        [randomUUID(), badgeId, keyedHash(hostedConfig().deviceKey, badgeSecret), timestamp],
       )
       await client.query(
-        'UPDATE badges SET updated_at = to_timestamp($2 / 1000.0) WHERE id = $1',
-        [badgeId, now],
+        'UPDATE badges SET updated_at = $2::timestamptz WHERE id = $1',
+        [badgeId, timestamp],
       )
       return { badgeId, badgeSecret }
     })

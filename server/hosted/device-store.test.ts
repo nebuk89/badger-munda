@@ -58,8 +58,10 @@ test('device store authenticates active overlap credentials with keyed HMAC valu
     claimedAt: 1000,
   })
   assert.equal(database.calls[0].values[1], keyedHash('device-key', 'badge-secret-value'))
+  assert.equal((database.calls[0].values[2] as Date).getTime(), 2000)
   assert.match(database.calls[0].text, /b\.revoked_at IS NULL/)
   assert.match(database.calls[0].text, /c\.valid_until IS NULL OR c\.valid_until/)
+  assert.match(database.calls[0].text, /\$3::timestamptz/)
   assert.equal(JSON.stringify(database.calls).includes('badge-secret-value'), false)
 })
 
@@ -88,7 +90,8 @@ test('device store issues a single-use six-digit claim for ten minutes', async (
   assert.ok(insert)
   assert.equal(insert.values[1], 'badge-1')
   assert.equal(insert.values[2], keyedHash('claim-key', claim!.code))
-  assert.equal(insert.values[3], 605_000)
+  assert.equal((insert.values[3] as Date).getTime(), 605_000)
+  assert.equal((insert.values[4] as Date).getTime(), 5000)
 })
 
 test('device store records bounded presence and the latest receipt', async () => {
@@ -109,10 +112,10 @@ test('device store records bounded presence and the latest receipt', async () =>
   }, 5000)
   assert.match(database.calls[0].text, /ON CONFLICT \(badge_id\) DO UPDATE/)
   assert.deepEqual(database.calls[0].values, [
-    'badge-1', 'boot-id-1234', '2.0.0', 5000, 8, 7.5, 'frame_late',
+    'badge-1', 'boot-id-1234', '2.0.0', new Date(5000), 8, 7.5, 'frame_late',
   ])
   assert.match(database.calls[1].text, /badge_receipts/)
-  assert.deepEqual(database.calls[1].values, ['badge-1', 7, 6, 5, 44, 5000])
+  assert.deepEqual(database.calls[1].values, ['badge-1', 7, 6, 5, 44, new Date(5000)])
 })
 
 test('device store applies a durable per-badge sync limit', async () => {

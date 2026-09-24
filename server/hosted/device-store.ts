@@ -73,6 +73,7 @@ export class DeviceSyncStore {
   ) {}
 
   async authenticate(badgeId: string, badgeSecret: string, now = Date.now()) {
+    const timestamp = new Date(now)
     const result = await this.database.query<{
       id: string
       claimed_at: Date | null
@@ -86,19 +87,19 @@ export class DeviceSyncStore {
           AND b.revoked_at IS NULL
           AND c.secret_hmac = $2
           AND c.revoked_at IS NULL
-          AND c.valid_from <= to_timestamp($3 / 1000.0)
-          AND (c.valid_until IS NULL OR c.valid_until > to_timestamp($3 / 1000.0))
+          AND c.valid_from <= $3::timestamptz
+          AND (c.valid_until IS NULL OR c.valid_until > $3::timestamptz)
         LIMIT 1`,
-      [badgeId, keyedHash(this.deviceKey, badgeSecret), now],
+      [badgeId, keyedHash(this.deviceKey, badgeSecret), timestamp],
     )
     const badge = result.rows[0]
     if (!badge) return undefined
     if (!badge.first_used_at) {
       await this.database.query(
         `UPDATE badge_credentials
-            SET first_used_at = COALESCE(first_used_at, to_timestamp($2 / 1000.0))
+            SET first_used_at = COALESCE(first_used_at, $2::timestamptz)
           WHERE id = $1`,
-        [badge.credential_id, now],
+        [badge.credential_id, timestamp],
       )
     }
     return {
@@ -108,6 +109,7 @@ export class DeviceSyncStore {
   }
 
   async issueClaimCode(badgeId: string, now = Date.now()) {
+    const timestamp = new Date(now)
     return this.database.transaction(async (client) => {
       const badge = await client.query<{ claimed_at: Date | null }>(
         `SELECT claimed_at
@@ -122,10 +124,10 @@ export class DeviceSyncStore {
            FROM badge_claims
           WHERE badge_id = $1
             AND consumed_at IS NULL
-            AND expires_at > to_timestamp($2 / 1000.0)
+            AND expires_at > $2::timestamptz
           ORDER BY created_at DESC
           LIMIT 1`,
-        [badgeId, now],
+        [badgeId, timestamp],
       )
       if (existing.rows[0]) {
         return {
@@ -143,15 +145,15 @@ export class DeviceSyncStore {
              FROM badge_claims
             WHERE code_hmac = $1
               AND consumed_at IS NULL
-              AND expires_at > to_timestamp($2 / 1000.0)`,
-          [codeHmac, now],
+               AND expires_at > $2::timestamptz`,
+          [codeHmac, timestamp],
         )
         if (collision.rowCount) continue
         const expiresAt = now + 10 * 60_000
         await client.query(
           `INSERT INTO badge_claims (id, badge_id, code_hmac, expires_at, created_at)
-           VALUES ($1, $2, $3, to_timestamp($4 / 1000.0), to_timestamp($5 / 1000.0))`,
-          [id, badgeId, codeHmac, expiresAt, now],
+           VALUES ($1, $2, $3, $4::timestamptz, $5::timestamptz)`,
+          [id, badgeId, codeHmac, new Date(expiresAt), timestamp],
         )
         return { code, expiresAt }
       }
@@ -160,13 +162,14 @@ export class DeviceSyncStore {
   }
 
   async recordSync(badgeId: string, report: DeviceSyncReport, now = Date.now()) {
+    const timestamp = new Date(now)
     await this.database.transaction(async (client) => {
       await client.query(
         `INSERT INTO badge_presence (
            badge_id, boot_id, firmware_version, last_seen_at,
            known_station_revision, fps, last_error_code, updated_at
          )
-         VALUES ($1, $2, $3, to_timestamp($4 / 1000.0), $5, $6, $7, to_timestamp($4 / 1000.0))
+         VALUES ($1, $2, $3, $4::timestamptz, $5, $6, $7, $4::timestamptz)
          ON CONFLICT (badge_id) DO UPDATE SET
            boot_id = EXCLUDED.boot_id,
            firmware_version = EXCLUDED.firmware_version,
@@ -179,7 +182,7 @@ export class DeviceSyncStore {
           badgeId,
           report.bootId,
           report.firmwareVersion,
-          now,
+          timestamp,
           report.knownStationRevision ?? null,
           report.fps ?? null,
           report.errorCode ?? null,
@@ -191,7 +194,7 @@ export class DeviceSyncStore {
            badge_id, station_revision, command_seq, playback_generation,
            frame_id, received_at
          )
-         VALUES ($1, $2, $3, $4, $5, to_timestamp($6 / 1000.0))
+         VALUES ($1, $2, $3, $4, $5, $6::timestamptz)
          ON CONFLICT (badge_id) DO UPDATE SET
            station_revision = EXCLUDED.station_revision,
            command_seq = EXCLUDED.command_seq,
@@ -204,7 +207,7 @@ export class DeviceSyncStore {
           report.lastReceipt.commandSeq,
           report.lastReceipt.playbackGeneration,
           report.lastReceipt.frameId,
-          now,
+          timestamp,
         ],
       )
     })
@@ -216,6 +219,7 @@ export class DeviceSyncStore {
     windowMs: number,
     now = Date.now(),
   ) {
+    const timestamp = new Date(now)
     return this.database.transaction(async (client) => {
       const result = await client.query<{
         window_started_at: Date
@@ -234,8 +238,8 @@ export class DeviceSyncStore {
           `INSERT INTO device_sync_limits (
              badge_id, window_started_at, request_count, blocked_until
            )
-           VALUES ($1, to_timestamp($2 / 1000.0), 1, NULL)`,
-          [badgeId, now],
+           VALUES ($1, $2::timestamptz, 1, NULL)`,
+          [badgeId, timestamp],
         )
         return { allowed: true }
       }
@@ -243,11 +247,11 @@ export class DeviceSyncStore {
       if (windowEndsAt <= now) {
         await client.query(
           `UPDATE device_sync_limits
-              SET window_started_at = to_timestamp($2 / 1000.0),
+              SET window_started_at = $2::timestamptz,
                   request_count = 1,
                   blocked_until = NULL
             WHERE badge_id = $1`,
-          [badgeId, now],
+          [badgeId, timestamp],
         )
         return { allowed: true }
       }
@@ -257,9 +261,9 @@ export class DeviceSyncStore {
         await client.query(
           `UPDATE device_sync_limits
               SET request_count = LEAST(request_count + 1, $2),
-                  blocked_until = to_timestamp($3 / 1000.0)
+                  blocked_until = $3::timestamptz
             WHERE badge_id = $1`,
-          [badgeId, maximum + 1, retryAt],
+          [badgeId, maximum + 1, new Date(retryAt)],
         )
         return {
           allowed: false,
