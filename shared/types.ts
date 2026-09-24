@@ -1,4 +1,4 @@
-import type { GameEventId } from './game-events.ts'
+import type { GameEventId } from './game-events.js'
 
 export interface Clip {
   id: string

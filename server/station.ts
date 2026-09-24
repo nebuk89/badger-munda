@@ -1,9 +1,9 @@
 import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { z } from 'zod'
-import type { Broadcast, Clip, Command } from '../shared/types.ts'
-import { gameEvents } from '../shared/game-events.ts'
-import { writePrivateJson } from './config.ts'
+import type { Broadcast, Clip, Command } from '../shared/types.js'
+import { gameEvents } from '../shared/game-events.js'
+import { writePrivateJson } from './config.js'
 import {
   applyEngineCommand,
   broadcastFromEngine,
@@ -11,7 +11,7 @@ import {
   materializeEngineState,
   restoreEngineState,
   type EngineState,
-} from './station-engine.ts'
+} from './station-engine.js'
 
 export const commandSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('play'), clipId: z.string().max(64) }),

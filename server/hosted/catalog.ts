@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto'
 import { z } from 'zod'
-import type { Clip } from '../../shared/types.ts'
-import type { HostedContentConfig } from './env.ts'
-import { hostedConfig } from './env.ts'
+import type { Clip } from '../../shared/types.js'
+import type { HostedContentConfig } from './env.js'
+import { hostedConfig } from './env.js'
 
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/)
 const assetPathSchema = z.string().min(1).max(240)

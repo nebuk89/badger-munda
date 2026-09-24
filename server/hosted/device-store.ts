@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import type { PoolClient, QueryResultRow } from 'pg'
-import { keyedHash } from './crypto.ts'
-import { hostedPool, transaction } from './db/client.ts'
-import { hostedConfig } from './env.ts'
+import { keyedHash } from './crypto.js'
+import { hostedPool, transaction } from './db/client.js'
+import { hostedConfig } from './env.js'
 
 interface QueryResult<Row> {
   rows: Row[]

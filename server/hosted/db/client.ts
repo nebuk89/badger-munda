@@ -1,5 +1,5 @@
 import { Pool, type PoolClient } from 'pg'
-import { requiredEnv } from '../env.ts'
+import { requiredEnv } from '../env.js'
 
 let pool: Pool | undefined
 

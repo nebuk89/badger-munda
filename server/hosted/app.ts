@@ -1,16 +1,16 @@
 import express, { type ErrorRequestHandler, type Request, type RequestHandler } from 'express'
 import { z } from 'zod'
-import { commandSchema } from '../station.ts'
+import { commandSchema } from '../station.js'
 import {
   frameUrlTemplate,
   loadHostedCatalog,
   type HostedCatalog,
-} from './catalog.ts'
-import { equalText, sha256 } from './crypto.ts'
-import { hostedConfig } from './env.ts'
-import { verifyPassword } from './password.ts'
-import { HostedStore } from './store.ts'
-import { hostedPool } from './db/client.ts'
+} from './catalog.js'
+import { equalText, sha256 } from './crypto.js'
+import { hostedConfig } from './env.js'
+import { verifyPassword } from './password.js'
+import { HostedStore } from './store.js'
+import { hostedPool } from './db/client.js'
 
 interface HostedError extends Error {
   status?: number
