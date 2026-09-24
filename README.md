@@ -62,6 +62,23 @@ The service returns a device secret only after badge creation or administrator r
 Save it then, and use the safe USB installer to provision the badge ID, service URL, and secret.
 The service stores only keyed HMAC values for device secrets and claim codes.
 
+Provision the hosted foundation while the badge is in USB Disk Mode:
+
+```sh
+BADGE_MODE=hosted \
+BADGE_ID="<badge UUID>" \
+BADGE_SECRET="<one-time 32-byte base64url secret>" \
+npm run badge:install
+```
+
+The hosted service origin defaults to `https://badger-munda.vercel.app`.
+The installer rejects all other origins.
+It writes `/state/underhive/hosted.v1.json` and a separate trusted UTC seed.
+It does not put hosted credentials in Wi-Fi state, logs, or error text.
+It preserves an installed local `config.py`, Wi-Fi state, firmware, `main.py`, and unrelated files.
+The badge uses these files to start protocol 2 sync after Wi-Fi connects.
+Local mode still uses the existing Mac frame transport when hosted state is absent.
+
 Set these hosted environment variables in addition to the database and administrator settings:
 
 | Variable | Purpose |
@@ -77,11 +94,12 @@ The second migration adds bounded presence, latest receipts, content versions, c
 
 An administrator can create, list, claim, rotate, and revoke badges.
 Claim codes contain six digits, work once, and expire after ten minutes.
-This layer stores and consumes claim rows, but it does not issue codes from badge runtime.
+An unclaimed badge shows its current code and expiry on the device.
+The screen clears an expired code and requests a new code.
 Secret rotation can overlap the old credential for no more than 24 hours.
 Rotation still needs USB reprovisioning.
 The server never sends a replacement secret to badge runtime.
-The badge sends `Authorization: Badge <badge-id>.<badge-secret>` to `POST /api/device/sync`.
+The protocol 2 client sends `Authorization: Badge <badge-id>.<badge-secret>` to `POST /api/device/sync`.
 The service checks a keyed HMAC value and accepts each active overlap credential until its expiry.
 Revoked badges and revoked credentials fail with the same invalid-credential response.
 
@@ -89,8 +107,29 @@ Protocol 2 reports a boot ID, a firmware version, an optional known station revi
 An unclaimed badge receives one six-digit claim code with a ten-minute expiry.
 A claimed badge receives the server time, station and command revisions, playback generation, pause state, clip timing, FPS, frame count, and a public Blob `{frame}` URL template.
 The service stores one presence row and one latest receipt row for each badge.
-The badge fetches each immutable `UBF1` indexed-PNG frame from Blob.
+The badge derives the immutable catalog URL from the approved Blob frame URL.
+It streams and hashes the catalog, and it retains only the active clip index.
+It fetches each immutable `UBF1` indexed-PNG frame directly from Blob.
 The Vercel Function does not proxy frames or send a long frame stream.
+The badge checks protocol versions, revisions, catalog identity, frame paths,
+frame IDs, hashes, UBF1 headers, response lengths, and PNG bounds.
+It rejects non-Vercel Blob origins and content paths outside the active catalog.
+The client supports at most 256 frames in one active clip to keep memory bounded.
+The client reports the last frame that the launcher presented.
+Each receipt includes the station revision, command sequence, playback generation, and frame ID.
+The client sends only the latest receipt during the next scheduled sync.
+It does not add a request for each frame.
+
+Installed hosted state selects hosted mode.
+An absent hosted state still selects the existing local Mac transport.
+HOME closes the active transport and returns control to the stock launcher.
+Hold A+C for three seconds to close playback and start Wi-Fi setup.
+Press B to cancel Wi-Fi setup.
+The hosted client retains the last complete frame during Wi-Fi loss and bounded retry delays.
+It resets clip-specific state after an event or clip switch, and it keeps station revisions monotonic.
+Paused stations use the server position without advancing the clip clock.
+Screen errors use stable codes and bounded retry times.
+Logs and diagnostics do not include badge credentials, Wi-Fi passwords, authorization headers, or server error bodies.
 
 | Endpoint | Purpose | Authentication |
 |---|---|---|
@@ -234,7 +273,8 @@ Uploaded videos use fixed decoder formats and cannot select arbitrary network pr
 The initial local setup uses HTTP, not HTTPS.
 Someone who can observe that network traffic can observe credentials and media.
 Do not expose port 8787 to the internet.
-A public deployment needs HTTPS and a separate deployment design.
+The hosted foundation uses strict HTTPS and separate badge credentials.
+The local bearer token never becomes a hosted credential.
 
 Pairing sessions expire after seven days or a server restart.
 The controller code and badge token survive a restart.
@@ -386,6 +426,7 @@ npm run build
 npm run lint
 npm run content:hosted
 npm run content:upload:check
+npm run badge:soak
 python3 -m unittest discover -s device -p 'test_*.py'
 python3 -m unittest discover -s badge/tests -p 'test_*.py'
 npm run test:ui

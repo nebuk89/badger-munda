@@ -31,7 +31,8 @@ Do **not** infer support from today's Badgeware documentation:
   **not** be sufficient for these C stream callbacks.
 * The published [MonaOS v4.03 factory UF2](https://github.com/badger/home/releases/tag/mona-os-v4.03)
   was downloaded to the workstation for static inspection, not installed.
-  Its payload contains `VfsLfs2`, `mount`, `Image`, and `load_into` names.
+  Its payload contains `VfsLfs2`, `mount`, `Image`, `load_into`, `SSLContext`,
+  `CERT_REQUIRED`, `load_verify_locations`, and `ntptime` names.
   This corroborates availability; binary strings alone are not runtime proof.
 * Modern [PicoVector](https://github.com/pimoroni/picovector/blob/main/micropython/image.cpp)
   does register an image buffer slot and wraps caller-supplied buffers. This is
@@ -114,6 +115,92 @@ presents the display between app updates. This means “applied by software,” 
 independent optical confirmation of the panel. Network last-seen is separate.
 FPS counts newly presented sequence numbers, not duplicate polls.
 
+## Hosted HTTPS foundation
+
+Hosted configuration stays separate from Wi-Fi state:
+
+```json
+{
+  "schema": 1,
+  "mode": "hosted",
+  "serviceOrigin": "https://badger-munda.vercel.app",
+  "badgeId": "11111111-1111-4111-8111-111111111111",
+  "badgeSecret": "<43-character base64url secret>"
+}
+```
+
+The installer writes this format to `/state/underhive/hosted.v1.json`.
+An absent file selects local mode.
+The validator accepts only the exact hosted origin, a canonical UUID, and a
+32-byte base64url secret. It rejects paths, ports, credentials, IP addresses,
+other Vercel hosts, non-HTTPS schemes, extra fields, and header characters.
+
+`hosted_transport.py` forms `Authorization: Badge <badge-id>.<badge-secret>`.
+It provides bounded request construction for later protocol 2 sync.
+Errors use fixed messages, and the redaction helper removes the secret from
+diagnostic text. Current code does not log request bytes or exception details.
+
+`VerifiedHttps` uses `SSLContext`, `CERT_REQUIRED`, a CA file, and
+`server_hostname`. It has no unverified mode and no fallback path.
+The bundled CA file contains Google Trust Services Root R1 and R4 certificates
+from the [Google Trust Services repository](https://pki.goog/repository/).
+The live controller certificate used Root R1 during development.
+A CA change outside these roots needs an app update.
+
+TLS certificate checks need valid UTC. The installer writes a workstation UTC
+seed to `/state/underhive/trusted-time.v1.json`.
+`TrustedClock` sets an old or reset RTC to that saved lower bound before TLS.
+Only a later verified HTTPS response can advance this state in a later layer.
+The client does not use unauthenticated NTP to bypass certificate time checks.
+Missing, corrupt, backwards, unsupported, or out-of-range time fails closed.
+If a badge stays offline across certificate rotation and loses RTC state, run
+hosted USB provisioning again to refresh the trusted lower bound.
+
+The hosted client sends protocol 2 sync reports to
+`https://badger-munda.vercel.app/api/device/sync`.
+It accepts only protocol version 2 and monotonic station state.
+It derives `catalog.json` from the immutable frame template and content hash.
+The origin must match `*.public.blob.vercel-storage.com`.
+The content path must match
+`/content/v1/<catalog-hash>/clips/<clip-id>/frames/{frame}.ubf`.
+
+The catalog parser reads at most 1,024 bytes from the response at one time.
+It hashes a compact token stream that matches the server catalog identity.
+It validates every clip and frame entry, but it retains only the active clip.
+The active clip can contain at most 256 frames.
+The current hosted package uses 64 frames per clip.
+
+Each frame request goes directly to the approved public Blob origin.
+The client checks the response length, catalog frame hash, frame ID, FPS,
+UBF1 header, PNG payload bound, and PNG structure before display.
+It never sends badge authorization to Blob.
+TLS, authorization, protocol, origin, catalog, and frame failures do not start
+an unverified or local fallback.
+
+The client uses 1/2/4/8/16/30-second retry delays.
+It uses a bounded `Retry-After` value for hosted rate limits.
+Authentication failures use a 30-second retry delay.
+It keeps the last complete frame during temporary network failures.
+It rejects stale or conflicting revisions and fetches a new catalog after a
+content version or clip change.
+Wi-Fi setup closes the hosted client before it changes network state.
+An absent hosted state still selects the existing local Mac transport.
+
+An unclaimed badge shows the six-digit claim code and a minute-second expiry.
+The client clears the code at expiry and immediately requests a new sync.
+The screen never shows the badge secret.
+After the launcher presents a complete frame, the next scheduled sync reports
+the station revision, command sequence, playback generation, and frame ID.
+The client keeps only the latest receipt and does not send a request per frame.
+Presence reports include the boot ID, `MonaOS-4.03`, known station revision,
+measured FPS, and one stable error code.
+
+Hosted playback handles restart, Wi-Fi loss, stale content, server backoff,
+paused stations, game-event interruption, and clip changes.
+It keeps the last complete frame during temporary failures.
+It clears only clip-specific catalog state after a clip change.
+HOME and Wi-Fi setup close the transport and abort pending frame work.
+
 ## Memory and responsiveness
 
 Default PNG mode uses **65,536 bytes** for LittleFS, split across sixteen
@@ -133,6 +220,13 @@ guardrail, **not a measured sufficiency guarantee**.
 
 RGBA mode has one retained 76,800-byte staging buffer plus the existing screen.
 Network fragments never paint partial raw frames.
+
+Hosted mode adds a 1,024-byte catalog read chunk, a 4,096-byte HTTPS read
+chunk, and the active frame IDs and SHA-256 hashes.
+The 256-frame cap bounds the retained catalog index.
+The built-in 64-frame clips retain 64 integers and 64 hashes.
+The client never retains a full catalog, clip, or contiguous frame payload in
+one Python bytearray. The RAM LittleFS sink remains the largest fixed allocation.
 
 Each app update performs at most two nonblocking 4 KiB socket reads. It uses a
 numeric IPv4 address to avoid unbounded DNS resolution, a 1.2-second inactivity
@@ -190,7 +284,7 @@ authoritative.
 ## Installation and Wi-Fi setup
 
 Start the Mac station before installation. Press RESET twice for USB Disk Mode.
-Run the installer from the repository root:
+Run the local installer from the repository root:
 
 ```sh
 npm run badge:install
@@ -202,6 +296,24 @@ It writes the app, device configuration, and paginated menu.
 New installations default to the upside-down tabletop orientation.
 Set `BADGE_ROTATION=0` when you run the installer for an upright badge.
 Eject BADGER safely before a normal RESET.
+
+For hosted foundation provisioning, use the badge UUID and the one-time secret:
+
+```sh
+BADGE_MODE=hosted \
+BADGE_ID="<badge UUID>" \
+BADGE_SECRET="<one-time 32-byte base64url secret>" \
+npm run badge:install
+```
+
+Do not put the secret on the command line as an argument.
+The environment value does not appear in installer output.
+Hosted provisioning preserves an existing local `config.py` and all Wi-Fi
+state. It updates the shared app modules and CA file, then atomically replaces
+each hosted state file. It writes trusted time before hosted credentials.
+It removes stale hosted `.new` and `.bak` copies after replacement.
+The installed app selects hosted playback on its next start.
+Remove hosted state to select the existing local Mac mode.
 
 ### On-device Wi-Fi setup
 
@@ -237,8 +349,9 @@ State replacement uses a checked `.new` file and keeps the prior valid `.bak`
 copy. A corrupt primary file falls back to a valid candidate or backup. If no
 state copy is valid, Underhive keeps the `/system/secrets.py` fallback.
 
-The setup path does not change `SERVER_URL`, `DEVICE_TOKEN`, `DEVICE_ID`, the
-local Mac broadcaster, frame rendering, pairing cards, or programme behavior.
+The setup path does not change `SERVER_URL`, `DEVICE_TOKEN`, `DEVICE_ID`,
+`hosted.v1.json`, the local Mac broadcaster, frame rendering, pairing cards,
+or programme behavior.
 
 Prepare the serial tools once:
 
@@ -309,6 +422,55 @@ Acceptance checklist:
    provided by stock `main.py`; avoid assuming native decode is preemptible.
 6. Compare parent-owned before/after device backups to confirm flash changes are
    limited to the intentional one-time installation/configuration.
+7. On MonaOS v4.03, prove that `SSLContext` loads the bundled roots, checks the
+   live hostname, and completes a handshake within the memory limit.
+8. Remove power long enough to reset RTC state. Prove that USB-seeded time
+   restores certificate validation without NTP or an unverified TLS attempt.
+
+### Hosted layer acceptance
+
+Run the hardware-free soak test first:
+
+```sh
+npm run badge:soak
+```
+
+The command runs 20,000 deterministic update cycles.
+It checks claim expiry, receipt bounds, Wi-Fi loss, server backoff, stale state,
+pause, event clip changes, cleanup, and retained-memory growth.
+
+Use MonaOS v4.03 for the physical checks below.
+Do not flash firmware as part of these checks.
+
+1. Record free memory before display setup and after hosted transport setup.
+   Compare both values with the local PNG baseline.
+   Confirm that playback does not raise `memory_low` during a 30-minute run.
+2. Start hosted mode with the bundled GTS roots.
+   Confirm a verified handshake to the configured hostname.
+   Confirm that no unverified TLS path or NTP request occurs.
+3. Run one normal clip for 30 minutes.
+   Record the minimum, median, and maximum reported FPS.
+   Confirm that the badge keeps the latest complete frame if it misses a frame.
+4. Remove Wi-Fi for 60 seconds.
+   Restore Wi-Fi.
+   Confirm `wifi_unavailable`, bounded retries, automatic recovery, and no partial frame.
+5. Stop the hosted service long enough to reach the 30-second retry cap.
+   Start the service.
+   Confirm automatic recovery without a badge reset.
+6. Pause the station, dispatch a game event, replace it with another event,
+   then clear the event.
+   Confirm each clip switch starts the correct immutable content.
+   Confirm that the paused advert resumes at its saved position.
+7. Press HOME while the badge connects, downloads a frame, decodes PNG, and shows playback.
+   Confirm return to the stock launcher each time.
+   Confirm that the transport and RAM sink close without a credential log.
+8. Remove power long enough to lose RTC state.
+   Start hosted mode offline, then restore the network.
+   Confirm that the USB-seeded lower bound restores verified TLS.
+9. Compare the parent-owned backup from before installation with a new backup.
+   Confirm changes only in the approved app, menu, hosted state, trusted time, and Wi-Fi state files.
+10. Remove `hosted.v1.json` from a test copy.
+    Confirm that Underhive starts the existing local Mac mode with the same rotation and Wi-Fi setup behavior.
 
 Host validation:
 
