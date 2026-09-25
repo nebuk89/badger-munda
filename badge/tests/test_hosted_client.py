@@ -213,6 +213,27 @@ class SyncProtocolTests(unittest.TestCase):
                     template, value["contentVersion"], value["clip"]["id"]
                 )
 
+    def test_blob_store_host_characters_are_ascii(self):
+        value = sync_value()
+        valid = value["clip"]["frameUrlTemplate"].replace(
+            "underhive.public", "underhive-1.public"
+        )
+        self.assertEqual(
+            validate_frame_template(
+                valid, value["contentVersion"], value["clip"]["id"]
+            )["host"],
+            "underhive-1.public.blob.vercel-storage.com",
+        )
+        for char in ("_", "+", "%", " ", "\u00e9", "\uff11"):
+            template = value["clip"]["frameUrlTemplate"].replace(
+                "underhive.public", "bad%shost.public" % char
+            )
+            with self.subTest(char=repr(char)):
+                with self.assertRaises(HostedProtocolError):
+                    validate_frame_template(
+                        template, value["contentVersion"], value["clip"]["id"]
+                    )
+
 
 class CatalogTests(unittest.TestCase):
     def test_streaming_catalog_retains_only_active_clip_metadata(self):
