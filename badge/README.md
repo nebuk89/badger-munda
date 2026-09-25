@@ -148,6 +148,8 @@ diagnostic text. Current code does not log request bytes or exception details.
 
 `VerifiedHttps` uses `SSLContext`, `CERT_REQUIRED`, a CA file, and
 `server_hostname`. It has no unverified mode and no fallback path.
+MonaOS exposes the installed CA file at
+`/system/apps/underhive/gts-roots.pem` during runtime.
 The bundled CA file contains Google Trust Services Root R1 and R4 certificates
 from the [Google Trust Services repository](https://pki.goog/repository/).
 The live controller certificate used Root R1 during development.
