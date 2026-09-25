@@ -1,6 +1,7 @@
 """Non-secret bounds for Underhive state and Wi-Fi setup."""
 
 STATE_DIR = "/state/underhive"
+STATE_SEED_DIR = "/system/state/underhive"
 WIFI_STATE_FILE = "wifi.v1.json"
 HOSTED_STATE_FILE = "hosted.v1.json"
 TRUSTED_TIME_FILE = "trusted-time.v1.json"
