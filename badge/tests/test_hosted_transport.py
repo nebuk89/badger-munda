@@ -130,7 +130,7 @@ class AuthenticationTests(unittest.TestCase):
                 build_request(hosted_state(), "POST", path)
 
 
-class MonaStringCompatibilityTests(unittest.TestCase):
+class MonaRuntimeCompatibilityTests(unittest.TestCase):
     def test_badge_modules_do_not_use_unsupported_string_classifiers(self):
         unsupported = (
             ".isalnum(", ".isalpha(", ".isascii(", ".isdecimal(",
@@ -142,6 +142,13 @@ class MonaStringCompatibilityTests(unittest.TestCase):
             for method in unsupported:
                 with self.subTest(source=source.name, method=method):
                     self.assertNotIn(method, text)
+
+    def test_badge_modules_do_not_use_the_usb_app_root_at_runtime(self):
+        for source in APP.glob("*.py"):
+            text = source.read_text()
+            with self.subTest(source=source.name):
+                self.assertNotIn('"/apps/', text)
+                self.assertNotIn("'/apps/", text)
 
 
 class FakeTime:
@@ -298,13 +305,14 @@ class VerifiedHttpsTests(unittest.TestCase):
         )
         ssl.SSLContext = lambda protocol: FakeContext(protocol, events)
         transport = VerifiedHttps(
-            ORIGIN, ("badger-munda.vercel.app",), Clock(), sockets, ssl,
-            ca_file="/apps/underhive/gts-roots.pem",
+            ORIGIN, ("badger-munda.vercel.app",), Clock(), sockets, ssl
         )
         secured = transport.connect()
         self.assertIs(secured.raw, raw)
         self.assertEqual(events[0], "clock")
-        self.assertIn(("ca", "/apps/underhive/gts-roots.pem"), events)
+        self.assertIn(
+            ("ca", "/system/apps/underhive/gts-roots.pem"), events
+        )
         self.assertIn(("tls", "badger-munda.vercel.app", 3), events)
 
     def test_tls_has_no_unverified_fallback(self):
