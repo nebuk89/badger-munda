@@ -408,6 +408,18 @@ class TransportTests(unittest.TestCase):
         self.assertEqual(transport.status, "Broadcaster offline")
         self.assertGreaterEqual(transport.due, 1000)
 
+    def test_failure_status_interface_uses_safe_code_and_retry_countdown(self):
+        transport = self.make_transport(response()[:-1])
+        for now in range(100):
+            transport.update(now)
+            if transport.failures:
+                break
+        self.assertEqual(transport.error_type, "ProtocolError")
+        self.assertEqual(transport.error_code, "protocol_invalid")
+        self.assertEqual(transport.retry_seconds(now), 1)
+        self.assertEqual(transport.retry_seconds(transport.due - 1), 1)
+        self.assertEqual(transport.retry_seconds(transport.due), 0)
+
     def test_total_timeout(self):
         transport = self.make_transport()
         transport.update(0)
@@ -626,6 +638,68 @@ class AppImportTests(unittest.TestCase):
             )
             module._start_playback()
             self.assertEqual(events[-1], "local")
+
+    def test_local_broadcaster_failure_uses_shared_safe_status_interface(self):
+        module = self.load_app()
+        labels = []
+        now = 100
+
+        class FailingSocket:
+            def setblocking(self, value):
+                self.assertFalse(value)
+
+            def connect(self, address):
+                raise OSError("private-broadcaster-detail")
+
+            def close(self):
+                pass
+
+        FailingSocket.assertFalse = lambda sock, value: self.assertFalse(value)
+        socket_module = types.SimpleNamespace(
+            socket=lambda *args: FailingSocket(), AF_INET=2, SOCK_STREAM=1,
+        )
+        select_module = types.SimpleNamespace(
+            poll=lambda: FakePoll(), POLLIN=1, POLLOUT=4, POLLERR=8,
+            POLLHUP=16,
+        )
+        module.screen = types.SimpleNamespace(
+            clear=lambda: None, text=lambda text, *_: labels.append(text),
+        )
+        module.time = types.SimpleNamespace(
+            ticks_ms=lambda: now, ticks_diff=lambda a, b: a - b,
+            ticks_add=lambda a, b: a + b, sleep_ms=lambda delay: None,
+        )
+        module._black = "black"
+        module._white = "white"
+        module._accent = "accent"
+        module._last_notice = None
+        module._notice_started = now
+        module._claim = None
+        module._onboarding = types.SimpleNamespace(active=False)
+        module._transport = Transport(
+            Sink(), "http://192.168.1.2:8787", "x" * 32, "desk-badge",
+            socket_module, select_module, lambda a, b: a - b,
+            lambda a, b: a + b,
+        )
+        with patch.object(module, "_connected", return_value=True):
+            module.update()
+        self.assertEqual(module._transport.status, "Broadcaster offline")
+        self.assertEqual(module._transport.error_code, "network_failed")
+        self.assertIn("network_failed; retry 1s", labels)
+        self.assertNotIn("private-broadcaster-detail", " ".join(labels))
+
+    def test_mode_diagnostic_names_selection_and_state_source_without_secrets(self):
+        module = self.load_app()
+        messages = []
+        with patch("builtins.print", side_effect=lambda *parts: messages.append(
+                " ".join(str(part) for part in parts))):
+            module._report_mode(True, "primary")
+            module._report_mode(False, "default")
+        self.assertEqual(messages, [
+            "Underhive mode: hosted; hosted state: primary",
+            "Underhive mode: local; hosted state: default",
+        ])
+        self.assertNotIn("badgeSecret", " ".join(messages))
 
     def test_notice_can_show_a_stable_error_and_retry_without_secrets(self):
         module = self.load_app()

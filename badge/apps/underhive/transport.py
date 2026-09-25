@@ -30,6 +30,7 @@ class Transport:
         self.state = "idle"
         self.status = "Waiting for Wi-Fi"
         self.error_type = None
+        self.error_code = None
         self.due = None
         self.failures = 0
         self.last_applied = None
@@ -89,9 +90,21 @@ class Transport:
         self._disconnect()
         self.sink.abort()
         self.error_type = type(error).__name__
+        if isinstance(error, ProtocolError) or isinstance(error, ValueError):
+            self.error_code = "protocol_invalid"
+        elif isinstance(error, MemoryError):
+            self.error_code = "memory_low"
+        else:
+            self.error_code = "network_failed"
         self.status = "Broadcaster offline"
         self.failures = min(5, self.failures + 1)
         self.due = self.add(now, min(15000, 1000 * (2 ** (self.failures - 1))))
+
+    def retry_seconds(self, now):
+        if self.due is None:
+            return None
+        remaining = self.diff(self.due, now)
+        return max(0, (remaining + 999) // 1000)
 
     def confirm_presented(self, now):
         # Called on the update AFTER decoding: badgeware's display.update()
@@ -164,6 +177,7 @@ class Transport:
                     self.status = "Paused" if flags & 1 else "Live"
                     self.failures = 0
                     self.error_type = None
+                    self.error_code = None
                     self.due = self.add(self.started, 1000 // min(self.target_fps, fps))
                     self._disconnect()
                     return
