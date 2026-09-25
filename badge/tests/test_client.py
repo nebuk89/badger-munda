@@ -12,8 +12,9 @@ import binascii
 APP = pathlib.Path(__file__).resolve().parents[1] / "apps/underhive"
 sys.path.insert(0, str(APP))
 from protocol import FrameParser, ProtocolError, parse_frame_header, validate_config
-from renderer import (RamBlockDevice, RamPngSink, RawSink, Rgb332Encoder,
-                      UnsupportedFirmware, validate_png)
+from defaults import HOSTED_MAX_PNG, HOSTED_RAM_BYTES
+from renderer import (MAX_PNG, RAM_BYTES, RamBlockDevice, RamPngSink, RawSink,
+                      Rgb332Encoder, UnsupportedFirmware, validate_png)
 from transport import Transport
 
 
@@ -136,6 +137,32 @@ class ProtocolTests(unittest.TestCase):
 
 
 class RendererTests(unittest.TestCase):
+    def ram_sink(self, free_memory, ram_bytes=RAM_BYTES, max_png=MAX_PNG):
+        class FakeFs:
+            def __init__(self, device):
+                self.device = device
+
+            @staticmethod
+            def mkfs(device):
+                pass
+
+            def open(self, path, mode):
+                return io.BytesIO()
+
+            def remove(self, path):
+                raise OSError(2)
+
+        vfs = types.SimpleNamespace(
+            VfsLfs2=FakeFs, mount=lambda fs, path: None,
+            umount=lambda path: None,
+        )
+        screen = types.SimpleNamespace(
+            width=160, height=120, load_into=lambda path: None
+        )
+        return RamPngSink(
+            screen, vfs, free_memory, ram_bytes, max_png
+        )
+
     def test_rgb332_encoder_fragmentation_and_checksums(self):
         pixels = bytes(range(256)) * 75
         for fragment in (1, 159, 160, 161, 4096, 19200):
@@ -204,6 +231,14 @@ class RendererTests(unittest.TestCase):
         self.assertEqual(sum(map(len, device.blocks)), 65536)
         self.assertTrue(all(len(block) == 4096 for block in device.blocks))
 
+    def test_hosted_ram_device_uses_four_blocks_without_changing_local_default(self):
+        local = RamBlockDevice()
+        hosted = RamBlockDevice(HOSTED_RAM_BYTES)
+        self.assertEqual(local.byte_length, 65536)
+        self.assertEqual(hosted.byte_length, 16384)
+        self.assertEqual(hosted.ioctl(4, 0), 4)
+        self.assertEqual(sum(map(len, hosted.blocks)), HOSTED_RAM_BYTES)
+
     def test_ram_device_handles_transfers_across_block_boundaries(self):
         device = RamBlockDevice()
         source = bytes(range(256)) * 24
@@ -253,11 +288,37 @@ class RendererTests(unittest.TestCase):
             with self.assertRaises(UnsupportedFirmware):
                 RamPngSink(screen, vfs)
 
-    def test_memory_budget_failure_before_allocating(self):
-        screen = types.SimpleNamespace(width=160, height=120, load_into=lambda path: None)
-        vfs = types.SimpleNamespace(VfsLfs2=None, mount=None, umount=None)
+    def test_local_and_hosted_memory_admission_thresholds(self):
         with self.assertRaises(MemoryError):
-            RamPngSink(screen, vfs, 100000)
+            self.ram_sink(RAM_BYTES + 49151)
+        local = self.ram_sink(RAM_BYTES + 49152)
+        local.close()
+        with self.assertRaises(MemoryError):
+            self.ram_sink(
+                HOSTED_RAM_BYTES + 49151,
+                HOSTED_RAM_BYTES, HOSTED_MAX_PNG,
+            )
+        hosted = self.ram_sink(
+            HOSTED_RAM_BYTES + 49152,
+            HOSTED_RAM_BYTES, HOSTED_MAX_PNG,
+        )
+        hosted.close()
+
+    def test_hosted_png_limit_has_margin_and_local_limit_is_unchanged(self):
+        self.assertEqual(HOSTED_MAX_PNG, 6144)
+        self.assertEqual(MAX_PNG, 32768)
+        hosted = self.ram_sink(
+            250000, HOSTED_RAM_BYTES, HOSTED_MAX_PNG
+        )
+        hosted.begin(HOSTED_MAX_PNG)
+        hosted.abort()
+        with self.assertRaisesRegex(ValueError, "invalid RAM PNG frame"):
+            hosted.begin(HOSTED_MAX_PNG + 1)
+        hosted.close()
+        local = self.ram_sink(250000)
+        local.begin(MAX_PNG)
+        local.abort()
+        local.close()
 
     def test_ram_staging_reuses_device_and_never_opens_flash(self):
         displays = []
@@ -585,6 +646,7 @@ class AppImportTests(unittest.TestCase):
     def test_runtime_selects_hosted_or_local_transport_from_installed_state(self):
         module = self.load_app()
         events = []
+        sink_args = []
 
         class Sink:
             def close(self):
@@ -610,7 +672,11 @@ class AppImportTests(unittest.TestCase):
         module.time = types.SimpleNamespace(
             ticks_diff=lambda a, b: a - b, ticks_add=lambda a, b: a + b
         )
-        module.RamPngSink = lambda *args: Sink()
+        def make_sink(*args):
+            sink_args.append(args)
+            return Sink()
+
+        module.RamPngSink = make_sink
         module._clock = object()
         module._socket_module = object()
         module._ssl_module = object()
@@ -632,12 +698,17 @@ class AppImportTests(unittest.TestCase):
             module._start_playback()
             self.assertEqual(events[0][0], "hosted")
             self.assertIs(events[0][1], module._hosted_claim_changed)
+            self.assertEqual(
+                sink_args[-1][3:],
+                (module.HOSTED_RAM_BYTES, module.HOSTED_MAX_PNG),
+            )
             module._stop_playback()
             module._hosted = types.SimpleNamespace(
                 enabled=False, state={"mode": "local"}
             )
             module._start_playback()
             self.assertEqual(events[-1], "local")
+            self.assertEqual(len(sink_args[-1]), 3)
 
     def test_local_broadcaster_failure_uses_shared_safe_status_interface(self):
         module = self.load_app()
