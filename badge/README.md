@@ -58,6 +58,12 @@ The original contiguous 96 KiB allocation caused a `MemoryError` during app
 startup. Sixteen separate 4 KiB blocks replaced it. Wi-Fi then needed a corrected
 network name; the badge connected after the user selected a visible network.
 
+Hosted initialization with the shared 64 KiB filesystem left approximately
+54 KiB free and reached a TLS `MemoryError`. A staged 16 KiB filesystem probe
+completed full app initialization with approximately 103 KiB free.
+That probe did not reach TLS because the current Wi-Fi credentials were
+rejected. Real hosted TLS and playback still need proof after Wi-Fi repair.
+
 Long-duration playback, battery life, connection recovery, and HOME during
 decode still need physical checks. HOME uses the stock launcher handler.
 There is no flash-download fallback.
@@ -182,6 +188,8 @@ It hashes a compact token stream that matches the server catalog identity.
 It validates every clip and frame entry, but it retains only the active clip.
 The active clip can contain at most 256 frames.
 The current hosted package uses 64 frames per clip.
+Across all 1,216 deployed UBF files, sizes are 2,907 bytes minimum,
+3,767 bytes median, 4,307 bytes at p95, and 4,576 bytes maximum.
 
 Each frame request goes directly to the approved public Blob origin.
 The client checks the response length, catalog frame hash, frame ID, FPS,
@@ -216,7 +224,7 @@ HOME and Wi-Fi setup close the transport and abort pending frame work.
 
 ## Memory and responsiveness
 
-Default PNG mode uses **65,536 bytes** for LittleFS, split across sixteen
+Local PNG mode uses **65,536 bytes** for LittleFS, split across sixteen
 **4,096-byte** bytearrays with retained memoryviews. It also retains a
 **4,096-byte** erased block, a **4,096-byte** transport buffer, a
 **1,024-byte** PNG-validation buffer, and at most **2,048 bytes** of HTTP headers.
@@ -230,6 +238,12 @@ decoder. Mount failure is fatal; no directory is created on flash. LittleFS
 files and native decoder caches have additional implementation-dependent memory.
 Initialization requires at least RAM-device size plus 48 KiB free; this is a
 guardrail, **not a measured sufficiency guarantee**.
+
+Hosted PNG mode uses **16,384 bytes**, split across four 4 KiB blocks.
+The 6,144-byte PNG limit is 1,568 bytes above the measured 4,576-byte maximum
+UBF file. The PNG payload margin is 1,588 bytes after its 20-byte UBF header.
+Two blocks remain for LittleFS metadata while two blocks hold frame data.
+The local 32,768-byte PNG limit and 64 KiB filesystem remain unchanged.
 
 RGBA mode has one retained 76,800-byte staging buffer plus the existing screen.
 Network fragments never paint partial raw frames.
