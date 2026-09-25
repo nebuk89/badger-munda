@@ -40,7 +40,12 @@ def validate_https_origin(value, allowed_hosts):
     for label in labels:
         if (not 1 <= len(label) <= 63 or label[0] == "-"
                 or label[-1] == "-"
-                or any(not (char.isalnum() or char == "-") for char in label)):
+                or any(not (
+                    "0" <= char <= "9"
+                    or "a" <= char <= "z"
+                    or "A" <= char <= "Z"
+                    or char == "-"
+                ) for char in label)):
             raise StateError("invalid hosted service host")
     if allowed_hosts is not None and authority not in allowed_hosts:
         raise StateError("hosted service is not allowed")

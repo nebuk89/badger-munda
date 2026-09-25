@@ -11,6 +11,7 @@ sys.path.insert(0, str(APP))
 
 from hosted_config import (
     HostedSettings, empty_hosted_state, validate_hosted_state,
+    validate_https_origin,
 )
 from hosted_transport import (
     HostedTransportError, VerifiedHttps, badge_authorization, build_request,
@@ -56,6 +57,16 @@ class HostedConfigTests(unittest.TestCase):
             state = dict(hosted_state(), serviceOrigin=origin)
             with self.subTest(origin=origin), self.assertRaises(StateError):
                 validate_hosted_state(state)
+
+    def test_origin_host_characters_are_ascii_letters_digits_or_hyphens(self):
+        self.assertEqual(
+            validate_https_origin("https://a1-b2.example.com", None),
+            ("a1-b2.example.com", 443, "a1-b2.example.com"),
+        )
+        for char in ("_", "+", "%", " ", "\u00e9", "\uff11"):
+            origin = "https://bad%shost.example.com" % char
+            with self.subTest(char=repr(char)), self.assertRaises(StateError):
+                validate_https_origin(origin, None)
 
     def test_secret_and_id_validation_do_not_echo_values(self):
         for field, value in (
@@ -117,6 +128,20 @@ class AuthenticationTests(unittest.TestCase):
         for path in ("/api/device/sync\r\nX: yes", "/content/frame", " /api/x"):
             with self.subTest(path=path), self.assertRaises(ValueError):
                 build_request(hosted_state(), "POST", path)
+
+
+class MonaStringCompatibilityTests(unittest.TestCase):
+    def test_badge_modules_do_not_use_unsupported_string_classifiers(self):
+        unsupported = (
+            ".isalnum(", ".isalpha(", ".isascii(", ".isdecimal(",
+            ".isidentifier(", ".islower(", ".isnumeric(", ".isprintable(",
+            ".isspace(", ".istitle(", ".isupper(",
+        )
+        for source in APP.glob("*.py"):
+            text = source.read_text()
+            for method in unsupported:
+                with self.subTest(source=source.name, method=method):
+                    self.assertNotIn(method, text)
 
 
 class FakeTime:

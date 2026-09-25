@@ -174,8 +174,12 @@ def _split_https_url(value):
         raise HostedProtocolError("asset origin is not approved")
     store = authority[:-len(_BLOB_SUFFIX)]
     if (not store or store.startswith(".") or store.endswith(".")
-            or any(not (char.isalnum() or char in "-.")
-                   for char in store)):
+            or any(not (
+                "0" <= char <= "9"
+                or "a" <= char <= "z"
+                or "A" <= char <= "Z"
+                or char in "-."
+            ) for char in store)):
         raise HostedProtocolError("invalid asset origin")
     return authority, path
 
