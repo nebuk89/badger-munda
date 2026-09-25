@@ -82,6 +82,9 @@ test('hosted installer preserves local configuration, Wi-Fi state, and device fi
       writeFile(path.join(menu, '__init__.py'), 'old-menu\n'),
       writeFile(path.join(app, 'config.py'), 'SERVER_URL = "http://192.168.1.2:8787"\n'),
       writeFile(path.join(state, 'wifi.v1.json'), '{"schema":1,"networks":[],"selected":null}\n'),
+      writeFile(path.join(state, 'hosted.v1.json'), '{"schema":1,"mode":"local"}\n'),
+      writeFile(path.join(state, 'hosted.v1.json.new'), '{"schema":1,"mode":"local"}\n'),
+      writeFile(path.join(state, 'hosted.v1.json.bak'), '{"schema":1,"mode":"local"}\n'),
     ])
     const output = await new Promise<{ code: number | null; stderr: string }>((resolve) => {
       const child = spawn(process.execPath, [
@@ -119,6 +122,8 @@ test('hosted installer preserves local configuration, Wi-Fi state, and device fi
     const saved = JSON.parse(await readFile(path.join(state, 'hosted.v1.json'), 'utf8'))
     assert.equal(saved.badgeId, badgeId)
     assert.equal(saved.badgeSecret, badgeSecret)
+    await assert.rejects(readFile(path.join(state, 'hosted.v1.json.new'), 'utf8'), /ENOENT/)
+    await assert.rejects(readFile(path.join(state, 'hosted.v1.json.bak'), 'utf8'), /ENOENT/)
   } finally {
     await rm(root, { recursive: true, force: true })
   }

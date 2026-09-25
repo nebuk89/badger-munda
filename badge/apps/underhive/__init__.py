@@ -125,6 +125,13 @@ def _hosted_claim_changed(claim):
     _last_notice = None
 
 
+def _report_mode(enabled, source):
+    mode = "hosted" if enabled else "local"
+    print("Underhive mode: %s; hosted state: %s" % (
+        mode, source or "unknown"
+    ))
+
+
 def _show_claim():
     global _last_notice
     if _claim is None or _transport is None:
@@ -319,6 +326,7 @@ def init():
         store = StateStore()
         _hosted = HostedSettings(store)
         _hosted.load()
+        _report_mode(_hosted.enabled, store.last_source)
         if _hosted.enabled:
             import machine
             import ssl
