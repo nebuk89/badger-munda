@@ -91,7 +91,7 @@ class HostedSettings:
         self.state = empty_hosted_state()
 
     def load(self):
-        self.state = self.store.load(
+        self.state = self.store.load_seeded(
             HOSTED_STATE_FILE, validate_hosted_state, empty_hosted_state()
         )
         return self.state

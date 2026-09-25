@@ -41,7 +41,7 @@ class TrustedClock:
         self.persisted_seconds = None
 
     def load(self):
-        self.state = self.store.load(
+        self.state = self.store.load_seeded(
             TRUSTED_TIME_FILE,
             validate_trusted_time_state,
             empty_trusted_time_state(),

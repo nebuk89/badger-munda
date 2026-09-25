@@ -1,3 +1,4 @@
+import json
 import pathlib
 import tempfile
 import time
@@ -68,7 +69,7 @@ class HostedConfigTests(unittest.TestCase):
 
     def test_missing_hosted_state_keeps_local_mode(self):
         with tempfile.TemporaryDirectory() as directory:
-            settings = HostedSettings(StateStore(directory))
+            settings = HostedSettings(StateStore(directory, seed_root=None))
             self.assertEqual(settings.load(), empty_hosted_state())
             self.assertFalse(settings.enabled)
         self.assertEqual(
@@ -77,6 +78,23 @@ class HostedConfigTests(unittest.TestCase):
             )[:2],
             ("192.168.1.2", 8787),
         )
+
+    def test_system_state_seed_selects_hosted_mode_and_copies_to_runtime(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = pathlib.Path(directory)
+            runtime = root / "state" / "underhive"
+            system = root / "system" / "state" / "underhive"
+            system.mkdir(parents=True)
+            (system / "hosted.v1.json").write_text(json.dumps(hosted_state()))
+            store = StateStore(str(runtime), seed_root=str(system))
+            settings = HostedSettings(store)
+            self.assertEqual(settings.load(), hosted_state())
+            self.assertTrue(settings.enabled)
+            self.assertEqual(store.last_source, "system-seed")
+            self.assertEqual(
+                json.loads((runtime / "hosted.v1.json").read_text()),
+                hosted_state(),
+            )
 
 
 class AuthenticationTests(unittest.TestCase):
@@ -134,7 +152,12 @@ class FakeRtc:
 class TrustedTimeTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.store = StateStore(self.temp.name)
+        root = pathlib.Path(self.temp.name)
+        self.runtime = root / "state" / "underhive"
+        self.system = root / "system" / "state" / "underhive"
+        self.store = StateStore(
+            str(self.runtime), seed_root=str(self.system)
+        )
 
     def tearDown(self):
         self.temp.cleanup()
@@ -154,8 +177,16 @@ class TrustedTimeTests(unittest.TestCase):
 
     def test_usb_seed_bootstraps_rtc_before_tls(self):
         trusted = 1_790_265_600
+        self.system.mkdir(parents=True)
+        (self.system / "trusted-time.v1.json").write_text(json.dumps({
+            "schema": 1, "unixSeconds": trusted,
+        }))
         clock, _time, rtc = self.clock(0, trusted)
-        clock.advance(trusted)
+        self.assertEqual(self.store.last_source, "system-seed")
+        self.assertEqual(
+            json.loads((self.runtime / "trusted-time.v1.json").read_text()),
+            {"schema": 1, "unixSeconds": trusted},
+        )
         self.assertEqual(clock.bootstrap(), trusted)
         self.assertEqual(
             rtc.values,
@@ -172,7 +203,7 @@ class TrustedTimeTests(unittest.TestCase):
     def test_verified_time_observation_limits_flash_writes(self):
         clock, _time, _rtc = self.clock(1_790_265_600)
         clock.advance(1_790_265_600)
-        source = pathlib.Path(self.temp.name) / "trusted-time.v1.json"
+        source = self.runtime / "trusted-time.v1.json"
         first = source.read_text()
         for seconds in range(1_790_265_700, 1_790_266_700, 100):
             clock.observe(seconds)

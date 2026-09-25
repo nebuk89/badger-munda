@@ -73,7 +73,11 @@ npm run badge:install
 
 The hosted service origin defaults to `https://badger-munda.vercel.app`.
 The installer rejects all other origins.
-It writes `/state/underhive/hosted.v1.json` and a separate trusted UTC seed.
+It writes hosted settings and a separate trusted UTC seed to the USB-visible
+`/state/underhive` directory.
+MonaOS exposes these provisioned files at `/system/state/underhive` during
+runtime. On first start, Underhive validates and copies each named seed into
+the writable `/state/underhive` directory.
 It does not put hosted credentials in Wi-Fi state, logs, or error text.
 It preserves an installed local `config.py`, Wi-Fi state, firmware, `main.py`, and unrelated files.
 The badge uses these files to start protocol 2 sync after Wi-Fi connects.
@@ -120,8 +124,11 @@ Each receipt includes the station revision, command sequence, playback generatio
 The client sends only the latest receipt during the next scheduled sync.
 It does not add a request for each frame.
 
-Installed hosted state selects hosted mode.
-An absent hosted state still selects the existing local Mac transport.
+Valid writable runtime state has priority over the read-only system seed.
+Runtime primary, candidate, and backup recovery all run before seed import.
+Corrupt runtime state fails closed and does not fall back to the system seed.
+When all runtime copies are absent, a valid hosted seed selects hosted mode.
+An absent seed and absent runtime state select the existing local Mac transport.
 HOME closes the active transport and returns control to the stock launcher.
 Hold A+C for three seconds to close playback and start Wi-Fi setup.
 Press B to cancel Wi-Fi setup.

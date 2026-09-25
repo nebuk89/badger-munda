@@ -129,8 +129,14 @@ Hosted configuration stays separate from Wi-Fi state:
 }
 ```
 
-The installer writes this format to `/state/underhive/hosted.v1.json`.
-An absent file selects local mode.
+The installer writes this format to the USB-visible
+`/state/underhive/hosted.v1.json` path. MonaOS exposes that file at
+`/system/state/underhive/hosted.v1.json` during runtime.
+If all writable runtime copies are absent, the app validates the system seed
+and atomically copies it to `/state/underhive/hosted.v1.json`.
+Valid runtime primary, candidate, or backup state has priority.
+Corrupt runtime state fails closed and does not fall back to the system seed.
+An absent runtime file and absent system seed select local mode.
 The validator accepts only the exact hosted origin, a canonical UUID, and a
 32-byte base64url secret. It rejects paths, ports, credentials, IP addresses,
 other Vercel hosts, non-HTTPS schemes, extra fields, and header characters.
@@ -148,13 +154,18 @@ The live controller certificate used Root R1 during development.
 A CA change outside these roots needs an app update.
 
 TLS certificate checks need valid UTC. The installer writes a workstation UTC
-seed to `/state/underhive/trusted-time.v1.json`.
+seed to the USB-visible `/state/underhive/trusted-time.v1.json` path.
+MonaOS exposes this seed at
+`/system/state/underhive/trusted-time.v1.json` during runtime.
+The app validates and copies it to writable runtime state when all runtime
+copies are absent.
 `TrustedClock` sets an old or reset RTC to that saved lower bound before TLS.
 Only a later verified HTTPS response can advance this state in a later layer.
 The client does not use unauthenticated NTP to bypass certificate time checks.
 Missing, corrupt, backwards, unsupported, or out-of-range time fails closed.
-If a badge stays offline across certificate rotation and loses RTC state, run
-hosted USB provisioning again to refresh the trusted lower bound.
+USB reprovisioning refreshes the read-only system seed.
+Remove the writable trusted-time runtime copies before restart when the badge
+must import that newer seed.
 
 The hosted client sends protocol 2 sync reports to
 `https://badger-munda.vercel.app/api/device/sync`.
@@ -312,8 +323,13 @@ Hosted provisioning preserves an existing local `config.py` and all Wi-Fi
 state. It updates the shared app modules and CA file, then atomically replaces
 each hosted state file. It writes trusted time before hosted credentials.
 It removes stale hosted `.new` and `.bak` copies after replacement.
+MonaOS exposes the USB files under `/system/state/underhive` at runtime.
+The app imports valid hosted and trusted-time seeds into writable
+`/state/underhive` state on its next start.
+Wi-Fi profiles stay only in writable runtime state.
 The installed app selects hosted playback on its next start.
-Remove hosted state to select the existing local Mac mode.
+To select local mode, remove the writable hosted runtime copies and the
+USB-visible hosted seed.
 
 ### On-device Wi-Fi setup
 

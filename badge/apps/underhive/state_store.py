@@ -7,9 +7,9 @@ except ImportError:
 import os
 
 try:
-    from .defaults import MAX_STATE_BYTES, STATE_DIR
+    from .defaults import MAX_STATE_BYTES, STATE_DIR, STATE_SEED_DIR
 except ImportError:
-    from defaults import MAX_STATE_BYTES, STATE_DIR
+    from defaults import MAX_STATE_BYTES, STATE_DIR, STATE_SEED_DIR
 
 
 class StateError(ValueError):
@@ -22,8 +22,9 @@ def _missing(error):
 
 class StateStore:
     def __init__(self, root=STATE_DIR, os_module=os, open_fn=open,
-                 max_bytes=MAX_STATE_BYTES):
+                 max_bytes=MAX_STATE_BYTES, seed_root=STATE_SEED_DIR):
         self.root = root.rstrip("/")
+        self.seed_root = seed_root.rstrip("/") if seed_root else None
         self.os = os_module
         self.open = open_fn
         self.max_bytes = max_bytes
@@ -33,6 +34,10 @@ class StateStore:
         if not name or "/" in name or name.startswith("."):
             raise StateError("invalid state name")
         return self.root + "/" + name
+
+    def _seed_path(self, name):
+        self._path(name)
+        return self.seed_root + "/" + name
 
     def _exists(self, path):
         try:
@@ -145,6 +150,22 @@ class StateStore:
             raise StateError("saved state is corrupt")
         self.last_source = "default"
         return validator(default)
+
+    def load_seeded(self, name, validator, default):
+        value = self.load(name, validator, default)
+        if self.last_source != "default" or self.seed_root is None:
+            return value
+        seed_status, seed_value = self._try_read(
+            self._seed_path(name), validator
+        )
+        if seed_status is False:
+            return value
+        if seed_status is None:
+            self.last_source = "seed-invalid"
+            raise StateError("provisioned state is corrupt")
+        saved = self.save(name, seed_value, validator)
+        self.last_source = "system-seed"
+        return saved
 
     def save(self, name, value, validator):
         value, raw = self._encode(value, validator)

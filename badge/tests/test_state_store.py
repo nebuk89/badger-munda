@@ -1,5 +1,6 @@
 import json
 import pathlib
+import shutil
 import sys
 import tempfile
 import unittest
@@ -35,19 +36,106 @@ class StateStoreTests(unittest.TestCase):
     def tearDown(self):
         self.temp.cleanup()
 
-    def store(self, os_module=None, maximum=8192):
+    def store(self, os_module=None, maximum=8192, seed_root=None):
         import os
         return StateStore(
             str(self.root), os_module=os_module or os,
-            max_bytes=maximum
+            max_bytes=maximum, seed_root=seed_root
         )
 
     def test_missing_state_uses_checked_default(self):
-        store = self.store()
+        store = self.store(seed_root=None)
         value = store.load("wifi.v1.json", validate_wifi_state, empty_wifi_state())
         self.assertEqual(value, empty_wifi_state())
         self.assertEqual(store.last_source, "default")
         self.assertFalse(self.root.exists())
+
+    def test_system_seed_is_copied_when_all_runtime_copies_are_absent(self):
+        seed_root = pathlib.Path(self.temp.name) / "system" / "state" / "underhive"
+        seed_root.mkdir(parents=True)
+        seeded = dict(empty_wifi_state(), revision=7)
+        (seed_root / "wifi.v1.json").write_text(json.dumps(seeded))
+        store = self.store(seed_root=str(seed_root))
+        self.assertEqual(
+            store.load_seeded(
+                "wifi.v1.json", validate_wifi_state, empty_wifi_state()
+            ),
+            seeded,
+        )
+        self.assertEqual(store.last_source, "system-seed")
+        self.assertEqual(
+            json.loads((self.root / "wifi.v1.json").read_text()), seeded
+        )
+
+    def test_normal_load_does_not_import_a_system_seed(self):
+        seed_root = pathlib.Path(self.temp.name) / "system" / "state" / "underhive"
+        seed_root.mkdir(parents=True)
+        (seed_root / "wifi.v1.json").write_text(json.dumps(
+            dict(empty_wifi_state(), revision=7)
+        ))
+        store = self.store(seed_root=str(seed_root))
+        self.assertEqual(
+            store.load(
+                "wifi.v1.json", validate_wifi_state, empty_wifi_state()
+            ),
+            empty_wifi_state(),
+        )
+        self.assertEqual(store.last_source, "default")
+        self.assertFalse(self.root.exists())
+
+    def test_runtime_recovery_copies_win_before_the_system_seed(self):
+        seed_root = pathlib.Path(self.temp.name) / "system" / "state" / "underhive"
+        seed_root.mkdir(parents=True)
+        (seed_root / "wifi.v1.json").write_text(json.dumps(
+            dict(empty_wifi_state(), revision=9)
+        ))
+        for suffix, source in (
+            ("", "primary"),
+            (".new", "candidate"),
+            (".bak", "backup"),
+        ):
+            with self.subTest(source=source):
+                if self.root.exists():
+                    shutil.rmtree(self.root)
+                self.root.mkdir(parents=True)
+                runtime = dict(empty_wifi_state(), revision=3)
+                (self.root / ("wifi.v1.json" + suffix)).write_text(
+                    json.dumps(runtime)
+                )
+                store = self.store(seed_root=str(seed_root))
+                self.assertEqual(
+                    store.load_seeded(
+                        "wifi.v1.json", validate_wifi_state, empty_wifi_state()
+                    ),
+                    runtime,
+                )
+                self.assertEqual(store.last_source, source)
+
+    def test_corrupt_runtime_state_does_not_fall_back_to_system_seed(self):
+        self.root.mkdir(parents=True)
+        (self.root / "wifi.v1.json").write_text("{broken")
+        seed_root = pathlib.Path(self.temp.name) / "system" / "state" / "underhive"
+        seed_root.mkdir(parents=True)
+        (seed_root / "wifi.v1.json").write_text(json.dumps(
+            dict(empty_wifi_state(), revision=9)
+        ))
+        store = self.store(seed_root=str(seed_root))
+        with self.assertRaisesRegex(StateError, "saved state is corrupt"):
+            store.load_seeded(
+                "wifi.v1.json", validate_wifi_state, empty_wifi_state()
+            )
+        self.assertEqual(store.last_source, "invalid")
+
+    def test_corrupt_system_seed_fails_before_the_default(self):
+        seed_root = pathlib.Path(self.temp.name) / "system" / "state" / "underhive"
+        seed_root.mkdir(parents=True)
+        (seed_root / "wifi.v1.json").write_text("{broken")
+        store = self.store(seed_root=str(seed_root))
+        with self.assertRaisesRegex(StateError, "provisioned state is corrupt"):
+            store.load_seeded(
+                "wifi.v1.json", validate_wifi_state, empty_wifi_state()
+            )
+        self.assertEqual(store.last_source, "seed-invalid")
 
     def test_save_keeps_a_valid_backup_and_loads_primary(self):
         store = self.store()
