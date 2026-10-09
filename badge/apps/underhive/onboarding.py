@@ -24,11 +24,22 @@ except ImportError:
     from wifi_manager import decode_ssid, validate_password
 
 _ALPHABET = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ"
+_DIGIT_LIMIT = 250
 
 
 def _random_text(length, random_bytes):
     data = random_bytes(length)
     return "".join(_ALPHABET[value % len(_ALPHABET)] for value in data)
+
+
+def _random_digits(length, random_bytes):
+    result = ""
+    while len(result) < length:
+        data = random_bytes(length - len(result))
+        for value in data:
+            if value < _DIGIT_LIMIT:
+                result += chr(48 + value % 10)
+    return result
 
 
 class WifiOnboarding:
@@ -70,7 +81,7 @@ class WifiOnboarding:
         self.started = now
         self.last_activity = now
         self.ap_ssid = "UNDERHIVE-" + _random_text(4, self.random_bytes)
-        self.ap_password = _random_text(12, self.random_bytes)
+        self.ap_password = _random_digits(6, self.random_bytes)
         self.nonce = binascii.hexlify(self.random_bytes(16)).decode()
 
     def _stop_ap(self):

@@ -153,6 +153,11 @@ class OnboardingTests(unittest.TestCase):
     def test_scan_stops_sta_and_starts_wpa_ap_with_manual_url(self):
         server = self.start()
         ap = self.network.aps[-1]
+        self.assertEqual(self.controller.ap_password, "222222")
+        self.assertEqual(len(self.controller.ap_password), 6)
+        self.assertTrue(all(
+            char in "0123456789" for char in self.controller.ap_password
+        ))
         self.assertEqual(ap.config_values, [{
             "ssid": self.controller.ap_ssid,
             "security": ap.SEC_WPA_WPA2,
@@ -163,6 +168,16 @@ class OnboardingTests(unittest.TestCase):
         self.assertEqual(self.controller.url, "http://192.168.4.1/")
         self.assertEqual(server.port, onboarding.SETUP_HTTP_PORT)
         self.assertTrue(any(item["ssid"] == "visible" for item in server.networks))
+
+    def test_random_digits_rejects_biased_values(self):
+        batches = iter((bytes((250, 251, 9, 10, 249, 255)), bytes((1, 2, 3))))
+
+        def random_bytes(length):
+            data = next(batches)
+            self.assertEqual(len(data), length)
+            return data
+
+        self.assertEqual(onboarding._random_digits(6, random_bytes), "909123")
 
     def test_credentials_are_saved_only_after_successful_join(self):
         server = self.start()
