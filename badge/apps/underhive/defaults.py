@@ -12,6 +12,8 @@ MAX_SAVED_NETWORKS = 5
 HOSTED_SERVICE_ORIGIN = "https://badger-munda.vercel.app"
 HOSTED_CA_FILE = "/system/apps/underhive/gts-roots.pem"
 HOSTED_TLS_TIMEOUT_SECONDS = 8
+HOSTED_RAM_BYTES = 4 * 4096
+HOSTED_MAX_PNG = 6 * 1024
 
 SETUP_HOLD_MS = 3000
 SETUP_IDLE_MS = 10 * 60 * 1000

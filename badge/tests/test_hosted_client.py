@@ -10,11 +10,13 @@ import unittest
 APP = pathlib.Path(__file__).resolve().parents[1] / "apps/underhive"
 sys.path.insert(0, str(APP))
 
-from hosted_client import HostedClient
+from hosted_client import MAX_FRAME_BYTES, HostedClient
 from hosted_protocol import (
     HostedProtocolError, parse_catalog, parse_sync_json, validate_frame_template,
 )
 from hosted_transport import HostedTransportError
+from defaults import HOSTED_MAX_PNG
+from protocol import HEADER_SIZE
 from protocol import validate_config
 
 ORIGIN = "https://badger-munda.vercel.app"
@@ -329,8 +331,13 @@ class HostedPlaybackTests(unittest.TestCase):
             "frameHashes": [hashlib.sha256(wire).hexdigest(), "f" * 64],
         }
         response = FakeBody(wire, fragment=13)
-        hosted._blob_response = lambda url, maximum: response
+        limits = []
+        hosted._blob_response = lambda url, maximum: (
+            limits.append(maximum) or response
+        )
         hosted._load_frame(0)
+        self.assertEqual(limits, [HEADER_SIZE + HOSTED_MAX_PNG])
+        self.assertEqual(MAX_FRAME_BYTES, HEADER_SIZE + HOSTED_MAX_PNG)
         self.assertEqual(hosted.sink.commits, 1)
         self.assertEqual(hosted.pending, {
             "stationRevision": 1,
@@ -346,6 +353,50 @@ class HostedPlaybackTests(unittest.TestCase):
         with self.assertRaisesRegex(HostedProtocolError, "metadata"):
             hosted._load_frame(0)
         self.assertGreaterEqual(hosted.sink.aborts, 1)
+
+    def test_hosted_frame_payload_limit_matches_the_bounded_sink(self):
+        class BoundedSink(FakeSink):
+            def begin(self, length):
+                if length > HOSTED_MAX_PNG:
+                    raise ValueError("invalid RAM PNG frame")
+                super().begin(length)
+
+        hosted = HostedClient(
+            BoundedSink(), hosted_state(), FakeClock(), object(), object(),
+            lambda a, b: a - b, lambda a, b: a + b,
+            "boot-id-1234", "MonaOS-4.03",
+        )
+        hosted.location = {
+            "origin": BLOB,
+            "host": "underhive.public.blob.vercel-storage.com",
+            "root": BLOB + "/content/v1/" + "a" * 64 + "/",
+            "template": BLOB + "/content/v1/" + "a" * 64
+                        + "/clips/clip-one/frames/{frame}.ubf",
+        }
+        hosted.plan = sync_value()
+        for length, accepted in (
+            (HOSTED_MAX_PNG, True),
+            (HOSTED_MAX_PNG + 1, False),
+        ):
+            payload = b"x" * length
+            wire = struct.pack(
+                "<4sHHBBHII", b"UBF1", 160, 120, 4, 0, 8, 7, length
+            ) + payload
+            hosted.catalog = {
+                "fps": 8,
+                "frameIds": [7, 8],
+                "frameHashes": [hashlib.sha256(wire).hexdigest(), "f" * 64],
+            }
+            hosted._blob_response = lambda url, maximum, wire=wire: FakeBody(
+                wire, fragment=1024
+            )
+            if accepted:
+                hosted._load_frame(0)
+                self.assertEqual(hosted.sink.commits, 1)
+            else:
+                with self.assertRaisesRegex(ValueError, "invalid RAM PNG"):
+                    hosted._load_frame(0)
+                self.assertGreaterEqual(hosted.sink.aborts, 1)
 
     def test_presented_frame_adds_one_bounded_receipt_to_later_syncs(self):
         hosted = client()

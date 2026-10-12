@@ -304,7 +304,9 @@ USB is needed for installation and charging, not for frame delivery.
 Wi-Fi must use a network supported by the badge's 2.4 GHz radio.
 The Mac and phone can use another band on the same reachable local network.
 The physical badge now receives and shows the adverts over Wi-Fi.
-It uses compressed PNG frames in a 64 KiB RAM filesystem, not flash downloads.
+Local playback uses compressed PNG frames in a 64 KiB RAM filesystem.
+Hosted playback uses a separate 16 KiB RAM filesystem and a 6 KiB PNG limit.
+Neither mode downloads frames to flash.
 
 ### Pair from the badge
 

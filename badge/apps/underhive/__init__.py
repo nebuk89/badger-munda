@@ -10,7 +10,7 @@ from badgeware import screen, brushes
 
 try:
     from . import config
-    from .defaults import SETUP_HOLD_MS
+    from .defaults import HOSTED_MAX_PNG, HOSTED_RAM_BYTES, SETUP_HOLD_MS
     from .hosted_config import HostedSettings
     from .onboarding import WifiOnboarding
     from .renderer import RawSink, RamPngSink, Rgb332Sink, UnsupportedFirmware
@@ -19,7 +19,7 @@ try:
     from .wifi_manager import WifiProfiles
 except ImportError:
     import config
-    from defaults import SETUP_HOLD_MS
+    from defaults import HOSTED_MAX_PNG, HOSTED_RAM_BYTES, SETUP_HOLD_MS
     from hosted_config import HostedSettings
     from onboarding import WifiOnboarding
     from renderer import RawSink, RamPngSink, Rgb332Sink, UnsupportedFirmware
@@ -168,7 +168,9 @@ def _start_playback():
     print("Underhive RAM: before display", gc.mem_free())
     if _hosted is not None and _hosted.enabled:
         import vfs
-        _sink = RamPngSink(screen, vfs, gc.mem_free())
+        _sink = RamPngSink(
+            screen, vfs, gc.mem_free(), HOSTED_RAM_BYTES, HOSTED_MAX_PNG
+        )
     elif config.FRAME_FORMAT == "rgba":
         _sink = RawSink(screen)
     elif config.FRAME_FORMAT in ("png", "rgb332"):

@@ -11,6 +11,7 @@ except ImportError:
 import binascii
 
 try:
+    from .defaults import HOSTED_MAX_PNG
     from .hosted_config import validate_hosted_state
     from .hosted_protocol import (
         MAX_CATALOG_BYTES, MAX_SYNC_BYTES, HostedProtocolError, frame_url,
@@ -23,6 +24,7 @@ try:
     )
     from .protocol import HEADER_SIZE, PNG, parse_frame_header
 except ImportError:
+    from defaults import HOSTED_MAX_PNG
     from hosted_config import validate_hosted_state
     from hosted_protocol import (
         MAX_CATALOG_BYTES, MAX_SYNC_BYTES, HostedProtocolError, frame_url,
@@ -35,7 +37,7 @@ except ImportError:
     )
     from protocol import HEADER_SIZE, PNG, parse_frame_header
 
-MAX_FRAME_BYTES = HEADER_SIZE + 32768
+MAX_FRAME_BYTES = HEADER_SIZE + HOSTED_MAX_PNG
 
 
 class HostedClient:

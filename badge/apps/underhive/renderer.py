@@ -19,10 +19,16 @@ class RamBlockDevice:
 
     BLOCK_SIZE = 4096
 
-    def __init__(self):
-        self.blocks = [bytearray(self.BLOCK_SIZE) for _ in range(RAM_BYTES // self.BLOCK_SIZE)]
+    def __init__(self, byte_length=RAM_BYTES):
+        if (type(byte_length) is not int or byte_length < 4 * self.BLOCK_SIZE
+                or byte_length % self.BLOCK_SIZE):
+            raise ValueError("invalid RAM device size")
+        self.blocks = [
+            bytearray(self.BLOCK_SIZE)
+            for _ in range(byte_length // self.BLOCK_SIZE)
+        ]
         self.views = [memoryview(block) for block in self.blocks]
-        self.byte_length = RAM_BYTES
+        self.byte_length = byte_length
         self.erased = b"\xff" * self.BLOCK_SIZE
 
     def readblocks(self, block, buf, offset=0):
@@ -55,7 +61,7 @@ class RamBlockDevice:
         if op in (1, 2, 3):
             return 0
         if op == 4:
-            return RAM_BYTES // self.BLOCK_SIZE
+            return self.byte_length // self.BLOCK_SIZE
         if op == 5:
             return self.BLOCK_SIZE
         if op == 6:
@@ -133,21 +139,26 @@ class RamPngSink:
     format_code = 4
     format_name = "png"
 
-    def __init__(self, screen, vfs_module, free_memory=None):
+    def __init__(self, screen, vfs_module, free_memory=None,
+                 ram_bytes=RAM_BYTES, max_png=MAX_PNG):
         if (screen.width, screen.height) != (WIDTH, HEIGHT):
             raise UnsupportedFirmware("screen dimensions")
         if not callable(getattr(screen, "load_into", None)):
             raise UnsupportedFirmware("screen.load_into absent")
         if not all(hasattr(vfs_module, name) for name in ("VfsLfs2", "mount", "umount")):
             raise UnsupportedFirmware("RAM LittleFS unavailable")
-        if free_memory is not None and free_memory < RAM_BYTES + 49152:
+        if (type(ram_bytes) is not int or type(max_png) is not int
+                or not 57 <= max_png <= ram_bytes):
+            raise ValueError("invalid RAM PNG capacity")
+        if free_memory is not None and free_memory < ram_bytes + 49152:
             raise MemoryError("insufficient free RAM")
         self.screen = screen
         self.vfs = vfs_module
         self.writer = None
         self.mounted = False
         self.path = MOUNT + "/frame.png"
-        self.device = RamBlockDevice()
+        self.max_png = max_png
+        self.device = RamBlockDevice(ram_bytes)
         self.scratch = memoryview(bytearray(1024))
         vfs_module.VfsLfs2.mkfs(self.device)
         self.fs = vfs_module.VfsLfs2(self.device)
@@ -160,7 +171,7 @@ class RamPngSink:
 
     def begin(self, length):
         self.abort()
-        if not self.mounted or not 57 <= length <= MAX_PNG:
+        if not self.mounted or not 57 <= length <= self.max_png:
             raise ValueError("invalid RAM PNG frame")
         self.length = length
         self.written = 0
@@ -281,9 +292,12 @@ class Rgb332Sink(RamPngSink):
     format_code = 3
     format_name = "rgb332"
 
-    def __init__(self, screen, vfs_module, free_memory=None):
+    def __init__(self, screen, vfs_module, free_memory=None,
+                 ram_bytes=RAM_BYTES, max_png=MAX_PNG):
         self.encoder = Rgb332Encoder(self._write_png)
-        RamPngSink.__init__(self, screen, vfs_module, free_memory)
+        RamPngSink.__init__(
+            self, screen, vfs_module, free_memory, ram_bytes, max_png
+        )
 
     def _write_png(self, data):
         RamPngSink.write(self, data)
