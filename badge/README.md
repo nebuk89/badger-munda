@@ -359,7 +359,7 @@ frame transport, scans in station mode, then starts a WPA access point. The
 badge shows:
 
 * the temporary `UNDERHIVE-XXXX` network name;
-* the random access-point password;
+* the temporary six-digit access-point password;
 * the actual manual setup URL from the AP interface.
 
 Join that network from a phone. Open the shown URL. Select or enter a network,
